@@ -161,29 +161,61 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			return
 		}
 
-		if r.gmService.IsGM(int64(fromID)) {
-			low := strings.ToLower(strings.TrimSpace(text))
-			if strings.HasPrefix(low, "лапидарий") {
-				parts := strings.Fields(text)
-				rest := ""
-				if len(parts) > 1 {
-					rest = strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
-					rest = strings.TrimLeft(rest, " ,:\t")
-				}
-				if rest != "" {
-					cmd := "!gm ask " + rest
-					handled, reply := r.gmService.HandleCommand(
-						ctx, int64(peerID), int64(fromID), cmd,
-					)
-					if handled && strings.TrimSpace(reply) != "" {
-						r.send(peerID, reply)
-						return
-					}
-
-					r.send(peerID, "Лапидарий молчит, словно мир затаил дыхание. Попробуй задать вопрос чуть позже.")
-					return
-				}
+		if strings.HasPrefix(lower, "!Лапидарий") || strings.HasPrefix(lower, "!сфера") {
+			parts := strings.Fields(text)
+			question := ""
+			if len(parts) > 1 {
+				question = strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
+				question = strings.TrimLeft(question, " ,.!?:")
 			}
+
+			if question == "" {
+				r.send(peerID, "Сфера тихо гудит. Ей нужен вопрос.")
+				return
+			}
+
+			r.send(peerID, "⏳ Сфера обращается к архивам...")
+
+			ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
+			if err != nil {
+				r.send(peerID, "Сфера не видит твою ауру (ошибка получения персонажа).")
+				return
+			}
+
+			sc, err := r.scenes.GetActiveScene(ctx)
+			if err != nil {
+				sc = models.Scene{Name: "Путешествие", LocationName: "Неизвестно"}
+			}
+
+			history, _ := r.scenes.GetLastMessagesSummary(ctx, sc.ID, 5)
+
+			qs, _ := r.questService.GetActiveForCharacter(ctx, ch.ID)
+
+			pCtx := llm.PlayerContext{
+				Character:     ch,
+				Scene:         sc,
+				History:       history,
+				Quests:        qs,
+				LocationTag:   sc.LocationName,
+				FactionTag:    ch.FactionName,
+				PlayerMessage: question,
+				CustomTags:    []string{"лор", "совет"},
+			}
+
+			answer, err := r.llm.AskLapidarius(ctx, pCtx, question)
+			if err != nil {
+				log.Printf("Lapidarius error: %v", err)
+				r.send(peerID, "Сфера пошла трещинами (Ошибка магии).")
+				return
+			}
+
+			r.send(peerID, answer)
+			return
+		}
+
+		if strings.HasPrefix(text, "!") {
+			r.handlePlayerCommand(ctx, peerID, fromID, text)
+			return
 		}
 
 		if strings.HasPrefix(text, "!") {

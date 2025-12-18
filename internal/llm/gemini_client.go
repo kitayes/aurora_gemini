@@ -34,10 +34,10 @@ func NewGeminiClient(apiKey, model string, loreRepo lore.Repository) *GeminiClie
 		apiKey:          apiKey,
 		model:           model,
 		loreRepo:        loreRepo,
-		client:          &http.Client{Timeout: 25 * time.Second},
+		client:          &http.Client{Timeout: 60 * time.Second},
 		temperature:     0.9,
 		topP:            0.95,
-		maxOutputTokens: 1800,
+		maxOutputTokens: 8192,
 	}
 }
 
@@ -254,4 +254,23 @@ func (c *GeminiClient) GenerateCombatTurn(ctx context.Context, cCtx CombatContex
 		return CombatResult{}, err
 	}
 	return parseCombatResult(raw), nil
+}
+
+func (c *GeminiClient) AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error) {
+	baseLore := c.loreRepo.GetCoreLore()
+
+	searchTags := append(pCtx.CustomTags, question)
+	loreBlocks := c.loreRepo.SelectRelevant(pCtx.LocationTag, pCtx.FactionTag, searchTags)
+
+	contextBlock := BuildPlayerContextBlock(pCtx, baseLore, loreBlocks)
+
+	fullPrompt := strings.Join([]string{
+		BuildLapidariusSystemPrompt(),
+		"\n=== ЧТО ВИДИТ СФЕРА (КОНТЕКСТ) ===",
+		contextBlock,
+		"\n=== ВОПРОС ПЕРСОНАЖА ===",
+		fmt.Sprintf("Герой спрашивает: \"%s\"", question),
+	}, "\n\n")
+
+	return c.callGenerateContent(ctx, fullPrompt)
 }

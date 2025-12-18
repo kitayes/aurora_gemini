@@ -48,6 +48,11 @@ type chatResponse struct {
 	} `json:"choices"`
 }
 
+// AskLapidarius — заглушка для соответствия интерфейсу llm.Client
+func (c *OpenAIClient) AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error) {
+	return "Модуль Лапидария не поддерживается в OpenAI версии. Переключитесь на Gemini.", nil
+}
+
 func (c *OpenAIClient) callChat(ctx context.Context, messages []chatMessage) (string, error) {
 	body, err := json.Marshal(chatRequest{Model: c.model, Messages: messages})
 	if err != nil {

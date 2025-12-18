@@ -13,6 +13,7 @@ type Client interface {
 	GenerateCombatTurn(ctx context.Context, cCtx CombatContext) (CombatResult, error)
 
 	GeneratePlain(ctx context.Context, prompt string) (string, error)
+	AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error)
 }
 
 type PlayerContext struct {
