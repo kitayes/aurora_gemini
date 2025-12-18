@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  aurora-bot:
+    build: .
+    container_name: aurora-bot
+    restart: unless-stopped
+    environment:
+      VK_TOKEN: "${VK_TOKEN}"
+      VK_GROUP_ID: "${VK_GROUP_ID}"
+      LLM_PROVIDER: "${LLM_PROVIDER}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      LLM_MODEL: "${LLM_MODEL}"
+      GM_USER_ID: "${GM_USER_ID}"
+    volumes:
+      - ./data:/app/data
+
+
