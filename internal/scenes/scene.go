@@ -31,22 +31,39 @@ VALUES ('Основная сцена', 'Столица Авроры', 'ai_assist
 }
 
 func (s *Service) GetActiveScene(ctx context.Context) (models.Scene, error) {
+	// Исправленный запрос: IFNULL(gm_mode, 0) вместо 'ai_assist'
 	row := s.db.QueryRowContext(ctx, `
 SELECT
   id,
-  name,
-  location_id,
-  IFNULL(location_name,''),
-  IFNULL(summary,''),
-  IFNULL(gm_mode,'ai_assist'),
-  is_active,
+  character_id,
+  IFNULL(location_id, 0),
+  IFNULL(location_name, 'Неизвестно'),
+  IFNULL(name, 'Сцена'),
+  IFNULL(gm_mode, 0),
+  IFNULL(status, 'active'),
+  IFNULL(summary, ''),
+  IFNULL(context, ''),
+  IFNULL(is_active, 1),
   created_at
-FROM scenes WHERE is_active=1 LIMIT 1`)
+FROM scenes
+WHERE is_active = 1
+ORDER BY created_at DESC
+LIMIT 1
+`)
 
 	var sc models.Scene
 	err := row.Scan(
-		&sc.ID, &sc.Name, &sc.LocationID, &sc.LocationName,
-		&sc.Summary, &sc.GMMode, &sc.IsActive, &sc.CreatedAt,
+		&sc.ID,
+		&sc.CharacterID,
+		&sc.LocationID,
+		&sc.LocationName,
+		&sc.Name,
+		&sc.GMMode,
+		&sc.Status,
+		&sc.Summary,
+		&sc.Context,
+		&sc.IsActive,
+		&sc.CreatedAt,
 	)
 	if err != nil {
 		return models.Scene{}, err
