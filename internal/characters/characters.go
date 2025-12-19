@@ -28,7 +28,33 @@ func NewService(db *sql.DB) *Service {
 	return &Service{db: db}
 }
 
-func (s *Service) GetOrCreateByVK(ctx context.Context, vkUserID int64) (models.Character, error) {
+// GetEffects загружает список эффектов персонажа из БД
+func (s *Service) GetEffects(ctx context.Context, charID int64) ([]models.Effect, error) {
+	// ВАЖНО: В миграции поле называется duration_turns, а не duration
+	query := `SELECT id, character_id, name, description, duration_turns, is_hidden 
+              FROM character_effects WHERE character_id = ?`
+
+	rows, err := s.db.QueryContext(ctx, query, charID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var effects []models.Effect
+	for rows.Next() {
+		var e models.Effect
+		// Порядок сканирования должен совпадать с SELECT
+		if err := rows.Scan(&e.ID, &e.CharacterID, &e.Name, &e.Description, &e.Duration, &e.IsHidden); err != nil {
+			continue // Если один эффект битый, пропускаем его, но грузим остальные
+		}
+		effects = append(effects, e)
+	}
+	return effects, nil
+}
+
+// GetOrCreateByVK ищет персонажа по VK ID или создает нового.
+// Возвращает указатель на структуру, чтобы избежать лишнего копирования.
+func (s *Service) GetOrCreateByVK(ctx context.Context, vkUserID int64) (*models.Character, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT
   id,
@@ -81,17 +107,20 @@ LIMIT 1
 		&ch.SheetJSON,
 		&ch.CreatedAt,
 	)
+
 	if err == sql.ErrNoRows {
+		// Создаем нового, если не найден
 		res, err := s.db.ExecContext(ctx, `
 INSERT INTO characters (vk_user_id, name, status, location_name, combat_power, combat_health, gold)
 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			vkUserID, "Безымянный", "жив", "Столица Авроры", 10, 100, 0,
 		)
 		if err != nil {
-			return models.Character{}, err
+			return nil, err
 		}
 		id, _ := res.LastInsertId()
-		return models.Character{
+
+		newChar := &models.Character{
 			ID:           id,
 			VKUserID:     vkUserID,
 			Name:         "Безымянный",
@@ -101,22 +130,29 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			CombatHealth: 100,
 			Gold:         0,
 			CreatedAt:    time.Now(),
-		}, nil
+		}
+		// У нового персонажа нет эффектов, возвращаем сразу
+		return newChar, nil
+
 	} else if err != nil {
-		return models.Character{}, err
+		return nil, err
 	}
 
-	return ch, nil
+	// --- ЗАГРУЗКА ЭФФЕКТОВ ---
+	// Если персонаж найден, подтягиваем его состояния
+	effects, _ := s.GetEffects(ctx, ch.ID) // Игнорируем ошибку (пустой слайс лучше, чем падение)
+	ch.Effects = effects
+
+	return &ch, nil
 }
 
-func (s *Service) UpdateCombatAndGold(ctx context.Context, ch models.Character) error {
+func (s *Service) UpdateCombatAndGold(ctx context.Context, ch *models.Character) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE characters SET combat_health=?, gold=? WHERE id=?`,
 		ch.CombatHealth, ch.Gold, ch.ID)
 	return err
 }
 
 func (s *Service) UpdateFromNormalizedForm(ctx context.Context, vkID int64, f *models.NormalizedCharacterForm) (*models.Character, error) {
-
 	ch, err := s.GetOrCreateByVK(ctx, vkID)
 	if err != nil {
 		return nil, err
@@ -125,7 +161,6 @@ func (s *Service) UpdateFromNormalizedForm(ctx context.Context, vkID int64, f *m
 	if strings.TrimSpace(f.Name) != "" {
 		ch.Name = strings.TrimSpace(f.Name)
 	}
-
 	if strings.TrimSpace(f.Gender) != "" {
 		ch.Gender = strings.TrimSpace(f.Gender)
 	}
@@ -135,11 +170,9 @@ func (s *Service) UpdateFromNormalizedForm(ctx context.Context, vkID int64, f *m
 	if strings.TrimSpace(f.Country) != "" {
 		ch.Country = strings.TrimSpace(f.Country)
 	}
-
 	if len(f.Abilities) > 0 {
 		ch.Abilities = strings.Join(f.Abilities, "; ")
 	}
-
 	if strings.TrimSpace(f.Bio) != "" {
 		ch.Bio = strings.TrimSpace(f.Bio)
 	}
@@ -162,7 +195,6 @@ func (s *Service) UpdateFromNormalizedForm(ctx context.Context, vkID int64, f *m
 	sheetJSON, _ := json.Marshal(f)
 	ch.SheetJSON = string(sheetJSON)
 
-	// ⬇️ у тебя НЕТ repo, обновляем напрямую через db
 	_, err = s.db.ExecContext(ctx, `
 UPDATE characters
 SET name = ?,
@@ -190,14 +222,13 @@ WHERE id = ?`,
 		return nil, err
 	}
 
-	// Возвращаем pointer (как и объявлено)
-	return &ch, nil
+	return ch, nil
 }
 
-func (s *Service) UpdateFromForm(ctx context.Context, vkUserID int64, f Form) (models.Character, error) {
+func (s *Service) UpdateFromForm(ctx context.Context, vkUserID int64, f Form) (*models.Character, error) {
 	ch, err := s.GetOrCreateByVK(ctx, vkUserID)
 	if err != nil {
-		return models.Character{}, err
+		return nil, err
 	}
 
 	if f.Name != "" {
@@ -229,7 +260,7 @@ WHERE id = ?`,
 		ch.Name, ch.Race, ch.Traits, ch.Goal, ch.LocationName, ch.Abilities, ch.Bio, ch.ID,
 	)
 	if err != nil {
-		return models.Character{}, err
+		return nil, err
 	}
 
 	return ch, nil

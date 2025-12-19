@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -54,13 +55,6 @@ type Router struct {
 	formMu  sync.Mutex
 	formBuf map[int64]*formBuffer
 }
-
-type FormBuffer struct {
-	StartedAt time.Time
-	Text      strings.Builder
-}
-
-var formBuffers = make(map[int64]*FormBuffer)
 
 func NewRouter(d Deps) *Router {
 	charSvc := characters.NewService(d.DB)
@@ -202,7 +196,7 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			qs, _ := r.questService.GetActiveForCharacter(ctx, ch.ID)
 
 			pCtx := llm.PlayerContext{
-				Character:     ch,
+				Character:     *ch, // Dereference pointer
 				Scene:         sc,
 				History:       history,
 				Quests:        qs,
@@ -233,6 +227,7 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 		}
 	})
 }
+
 func (r *Router) logSceneMessage(ctx context.Context, fromID int64, text string) error {
 	sc, err := r.scenes.GetActiveScene(ctx)
 	if err != nil {
@@ -270,8 +265,6 @@ func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, te
 		r.handleCombatTurn(ctx, peerID, fromID, text)
 	case strings.HasPrefix(lower, "!анкета пример"):
 		r.handleFormExample(ctx, peerID)
-	case strings.HasPrefix(lower, "!анкета пример"):
-		r.handleFormExample(ctx, peerID)
 	case strings.HasPrefix(lower, "!анкета"):
 		if strings.Contains(lower, "отмена") {
 			r.formMu.Lock()
@@ -283,7 +276,6 @@ func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, te
 		} else {
 			r.startOrAppendCharacterForm(ctx, peerID, fromID, text)
 		}
-	case strings.HasPrefix(lower, "!локация список"):
 	default:
 		_, err := r.vk.MessagesSend(api.Params{
 			"peer_id":   peerID,
@@ -647,7 +639,7 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 	}
 
 	pctx := llm.PlayerContext{
-		Character:     ch,
+		Character:     *ch, // Dereference
 		Scene:         sc,
 		History:       history,
 		Quests:        activeQuests,
@@ -750,7 +742,7 @@ func (r *Router) handleAdviceRequest(ctx context.Context, peerID, fromID int) {
 	}
 
 	pctx := llm.PlayerContext{
-		Character:     ch,
+		Character:     *ch, // Dereference
 		Scene:         sc,
 		History:       history,
 		Quests:        activeQuests,
@@ -795,45 +787,42 @@ func (r *Router) handleAdviceRequest(ctx context.Context, peerID, fromID int) {
 	log.Printf("OUT MSG peer=%d len=%d", peerID, len(reply))
 }
 
-// ---- Статус ----
-
 func (r *Router) handleStatusRequest(ctx context.Context, peerID, fromID int) {
 	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
 	if err != nil {
 		log.Printf("get character error: %v", err)
 		return
 	}
+
 	qs, err := r.questService.GetActiveForCharacter(ctx, ch.ID)
 	if err != nil {
 		log.Printf("quests error: %v", err)
-		return
-	}
-	if len(qs) == 0 {
-		_, err := r.vk.MessagesSend(api.Params{
-			"peer_id":   peerID,
-			"random_id": time.Now().UnixNano(),
-			"message":   "У тебя нет активных квестов.",
-		})
-		if err != nil {
-			log.Printf("status send error: %v", err)
-		}
-		return
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Твои активные квесты:\n")
-	for _, q := range qs {
-		sb.WriteString("— " + q.Title + " (id " + strconv.FormatInt(q.ID, 10) + ", стадия " + strconv.Itoa(q.Stage) + ", сложность " + q.Difficulty + ")\n")
+	sb.WriteString("👤 СОСТОЯНИЕ ПЕРСОНАЖА:\n")
+	sb.WriteString(ch.GetStatusDescription() + "\n")
+
+	if len(ch.Effects) > 0 {
+		sb.WriteString("\n⚡ ЭФФЕКТЫ:\n")
+		for _, eff := range ch.Effects {
+			if !eff.IsHidden {
+				sb.WriteString(fmt.Sprintf("• %s (%s)\n", eff.Name, eff.Description))
+			}
+		}
+	}
+	sb.WriteString("\n")
+
+	if len(qs) > 0 {
+		sb.WriteString("📜 АКТИВНЫЕ КВЕСТЫ:\n")
+		for _, q := range qs {
+			sb.WriteString("— " + q.Title + " (стадия " + strconv.Itoa(q.Stage) + ")\n")
+		}
+	} else {
+		sb.WriteString("📜 АКТИВНЫЕ КВЕСТЫ: нет\n")
 	}
 
-	_, err = r.vk.MessagesSend(api.Params{
-		"peer_id":   peerID,
-		"random_id": time.Now().UnixNano(),
-		"message":   sb.String(),
-	})
-	if err != nil {
-		log.Printf("status send error: %v", err)
-	}
+	r.send(peerID, sb.String())
 }
 
 func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, text string) {
@@ -844,7 +833,6 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 		return
 	}
 
-	// --- парсим первую строку: "!ход <id>" ---
 	header := strings.Fields(strings.TrimSpace(lines[0]))
 	if len(header) < 2 {
 		r.send(peerID, "Укажи id локации.\nПример:\n\n!ход 12\nЯ ищу слухи на рынке.")
@@ -857,21 +845,18 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 		return
 	}
 
-	// --- описание действия ---
 	action := strings.TrimSpace(strings.Join(lines[1:], "\n"))
 	if action == "" {
 		r.send(peerID, "Опиши действие персонажа.")
 		return
 	}
 
-	// --- персонаж ---
 	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
 	if err != nil {
 		log.Printf("character error: %v", err)
 		return
 	}
 
-	// --- активный квест ---
 	qs, err := r.questService.GetActiveForCharacter(ctx, ch.ID)
 	if err != nil {
 		log.Printf("quests error: %v", err)
@@ -884,40 +869,39 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 	}
 	q := qs[0]
 
-	// --- сцена ---
 	sc, err := r.scenes.GetActiveScene(ctx)
 	if err != nil {
 		log.Printf("scene error: %v", err)
 		return
 	}
 
-	// --- локация ---
 	loc, err := r.locService.GetByID(ctx, locID)
 	if err != nil {
 		r.send(peerID, "Локация не найдена.")
 		return
 	}
 
-	if err := r.scenes.SetActiveSceneLocation(
+	err = r.scenes.SetActiveSceneLocation(
 		ctx,
 		sql.NullInt64{Int64: loc.ID, Valid: true},
 		loc.Name,
-	); err != nil {
+	)
+	if err != nil {
 		log.Printf("set scene location error: %v", err)
+		r.send(peerID, "Не удалось установить текущую локацию.")
+		return
 	}
 
 	sc.LocationName = loc.Name
 
-	// --- история ---
 	history, err := r.scenes.GetLastMessagesSummary(ctx, sc.ID, 10)
 	if err != nil {
 		log.Printf("history error: %v", err)
 		return
 	}
 
-	// --- LLM ---
 	qCtx := llm.QuestProgressContext{
-		Character:    ch,
+		Character:    *ch, // Dereference
 		Scene:        sc,
 		Quest:        q,
 		History:      history,
@@ -931,7 +915,6 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 		return
 	}
 
-	// --- обновления ---
 	if result.Stage > 0 {
 		q.Stage = result.Stage
 	}
@@ -949,7 +932,6 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 		log.Printf("char gold update error: %v", err)
 	}
 
-	// --- ответ ---
 	textOut := result.Narration
 	if result.RewardGold > 0 {
 		textOut += "\n\nТы получаешь " + strconv.Itoa(result.RewardGold) + " золотых."
@@ -981,11 +963,7 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text string) {
 	action := strings.TrimSpace(strings.TrimPrefix(text, "!бой"))
 	if action == "" {
-		_, _ = r.vk.MessagesSend(api.Params{
-			"peer_id":   peerID,
-			"random_id": 0,
-			"message":   "Использование: !бой <описание твоих действий в бою>",
-		})
+		r.send(peerID, "Использование: !бой <описание твоих действий в бою>")
 		return
 	}
 	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
@@ -1004,7 +982,6 @@ func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text 
 		return
 	}
 
-	// можно поискать связанный активный квест, сейчас берём первый
 	var q *models.Quest
 	qs, _ := r.questService.GetActiveForCharacter(ctx, ch.ID)
 	if len(qs) > 0 {
@@ -1012,7 +989,7 @@ func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text 
 	}
 
 	cCtx := llm.CombatContext{
-		Character:    ch,
+		Character:    *ch, // Dereference
 		Scene:        sc,
 		Quest:        q,
 		History:      history,
@@ -1021,11 +998,7 @@ func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text 
 	result, err := r.llm.GenerateCombatTurn(ctx, cCtx)
 	if err != nil {
 		log.Printf("combat error: %v", err)
-		_, _ = r.vk.MessagesSend(api.Params{
-			"peer_id":   peerID,
-			"random_id": 0,
-			"message":   "Боги войны молчат. Попробуй ещё раз.",
-		})
+		r.send(peerID, "Боги войны молчат. Попробуй ещё раз.")
 		return
 	}
 
@@ -1037,7 +1010,7 @@ func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text 
 		log.Printf("char combat update error: %v", err)
 	}
 
-	textOut := result.RoundDesc + "\n\n(Твоё здоровье: " + strconv.Itoa(result.PlayerHP) + "%)"
+	textOut := result.RoundDesc + "\n\n(" + ch.GetStatusDescription() + ")"
 
 	if err := r.scenes.AppendMessage(ctx, models.SceneMessage{
 		SceneID:    sc.ID,
@@ -1049,14 +1022,8 @@ func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text 
 		log.Printf("scene log error: %v", err)
 	}
 
-	_, _ = r.vk.MessagesSend(api.Params{
-		"peer_id":   peerID,
-		"random_id": 0,
-		"message":   textOut,
-	})
+	r.send(peerID, textOut)
 }
-
-// ---- ЛОКАЦИИ ----
 
 func (r *Router) handleLocationList(ctx context.Context, peerID int) {
 	ls, err := r.locService.List(ctx, 20)
