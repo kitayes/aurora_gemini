@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 type Character struct {
 	ID           int64
@@ -29,15 +32,6 @@ type Character struct {
 	Effects []Effect
 }
 
-type Location struct {
-	ID          int64
-	Name        string
-	Description string
-	Tags        string
-	IsActive    bool
-	CreatedBy   string
-	CreatedAt   time.Time
-}
 type Effect struct {
 	ID          int64
 	CharacterID int64
@@ -47,14 +41,27 @@ type Effect struct {
 	IsHidden    bool
 }
 
+type Location struct {
+	ID          int64
+	Name        string
+	Description string
+	Tags        string
+	IsActive    bool
+	CreatedBy   string
+	CreatedAt   time.Time
+}
+
 type Scene struct {
 	ID           int64
 	CharacterID  int64
+	LocationID   sql.NullInt64
 	LocationName string
 	Name         string
 	Status       string
 	Summary      string
 	Context      string
+	GMMode       bool
+	IsActive     bool
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -62,7 +69,7 @@ type Scene struct {
 type SceneMessage struct {
 	ID         int64
 	SceneID    int64
-	SenderType string
+	SenderType string // "player", "ai", "system"
 	SenderID   int64
 	Content    string
 	CreatedAt  time.Time
@@ -74,11 +81,13 @@ type Quest struct {
 	LocationID  int64
 	Title       string
 	Description string
+	From        string
 	Status      string
 	Stage       int
 	Difficulty  string
 	RewardGold  int
 	RewardItem  string
+	RewardValue int
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
