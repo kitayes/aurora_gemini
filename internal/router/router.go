@@ -337,8 +337,15 @@ func (r *Router) normalizeCharacterForm(ctx context.Context, raw string) (*model
 		return nil, err
 	}
 
+	clean := strings.TrimSpace(reply)
+	clean = strings.TrimPrefix(clean, "```json")
+	clean = strings.TrimPrefix(clean, "```")
+	clean = strings.TrimSuffix(clean, "```")
+	clean = strings.TrimSpace(clean)
+
 	var form models.NormalizedCharacterForm
-	if err := json.Unmarshal([]byte(reply), &form); err != nil {
+	if err := json.Unmarshal([]byte(clean), &form); err != nil {
+		log.Printf("JSON Parse Error: %v\nInput: %s", err, clean)
 		return nil, err
 	}
 	return &form, nil
@@ -1139,7 +1146,6 @@ func (r *Router) logSceneMessage(ctx context.Context, fromID int64, text string)
 
 			history, _ := r.scenes.GetLastMessagesSummary(bgCtx, sceneID, 20)
 
-			// Вызываем LLM
 			newSummary, err := r.llm.Summarize(bgCtx, currentSummary, []string{history})
 			if err == nil {
 				r.scenes.UpdateSummary(bgCtx, sceneID, newSummary)
