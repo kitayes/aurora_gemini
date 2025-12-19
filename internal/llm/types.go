@@ -14,6 +14,7 @@ type Client interface {
 
 	GeneratePlain(ctx context.Context, prompt string) (string, error)
 	AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error)
+	Summarize(ctx context.Context, oldSummary string, newMessages []string) (string, error)
 }
 
 type GenOptions struct {

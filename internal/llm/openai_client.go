@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"aurora/internal/lore"
@@ -48,9 +49,32 @@ type chatResponse struct {
 	} `json:"choices"`
 }
 
-// AskLapidarius — заглушка для соответствия интерфейсу llm.Client
 func (c *OpenAIClient) AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error) {
 	return "Модуль Лапидария не поддерживается в OpenAI версии. Переключитесь на Gemini.", nil
+}
+
+func (c *OpenAIClient) Summarize(ctx context.Context, oldSummary string, newMessages []string) (string, error) {
+	textBlock := strings.Join(newMessages, "\n")
+	prompt := fmt.Sprintf(`
+ТЫ — МОДУЛЬ СЖАТИЯ ПАМЯТИ.
+Твоя задача: обновить краткое содержание (саммари) сцены, добавив в него новые события.
+
+[ТЕКУЩЕЕ САММАРИ]:
+%s
+
+[НОВЫЕ СОБЫТИЯ]:
+%s
+
+ИНСТРУКЦИЯ:
+1. Объедини старое и новое в один связный текст (до 150 слов).
+2. Сохрани имена NPC, важные решения и полученные предметы.
+3. Убери "воду" и пустые диалоги.
+4. Пиши в прошедшем времени.
+
+НОВОЕ САММАРИ:`, oldSummary, textBlock)
+
+	msgs := []chatMessage{{Role: "user", Content: prompt}}
+	return c.callChat(ctx, msgs)
 }
 
 func (c *OpenAIClient) callChat(ctx context.Context, messages []chatMessage) (string, error) {

@@ -228,21 +228,6 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 	})
 }
 
-func (r *Router) logSceneMessage(ctx context.Context, fromID int64, text string) error {
-	sc, err := r.scenes.GetActiveScene(ctx)
-	if err != nil {
-		return err
-	}
-	msg := models.SceneMessage{
-		SceneID:    sc.ID,
-		SenderType: "player",
-		SenderID:   fromID,
-		Content:    text,
-		CreatedAt:  time.Now(),
-	}
-	return r.scenes.AppendMessage(ctx, msg)
-}
-
 func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, text string) {
 	lower := strings.ToLower(strings.TrimSpace(text))
 
@@ -989,7 +974,7 @@ func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text 
 	}
 
 	cCtx := llm.CombatContext{
-		Character:    *ch, // Dereference
+		Character:    *ch,
 		Scene:        sc,
 		Quest:        q,
 		History:      history,
@@ -1126,4 +1111,45 @@ func buildWelcomeLine(name, gender string) string {
 	default:
 		return "Анкета сохранена. Аврора приветствует своего героя " + name + "!"
 	}
+}
+
+func (r *Router) logSceneMessage(ctx context.Context, fromID int64, text string) error {
+	sc, err := r.scenes.GetActiveScene(ctx)
+	if err != nil {
+		return err
+	}
+
+	msg := models.SceneMessage{
+		SceneID:    sc.ID,
+		SenderType: "player",
+		SenderID:   fromID,
+		Content:    text,
+		CreatedAt:  time.Now(),
+	}
+	if err := r.scenes.AppendMessage(ctx, msg); err != nil {
+		return err
+	}
+
+	go func(sceneID int64, currentSummary string) {
+		bgCtx := context.Background()
+
+		count, _ := r.scenes.GetMessageCount(bgCtx, sceneID)
+		if count > 20 {
+			log.Printf("Triggering summarization for scene %d...", sceneID)
+
+			history, _ := r.scenes.GetLastMessagesSummary(bgCtx, sceneID, 20)
+
+			// Вызываем LLM
+			newSummary, err := r.llm.Summarize(bgCtx, currentSummary, []string{history})
+			if err == nil {
+				r.scenes.UpdateSummary(bgCtx, sceneID, newSummary)
+				r.scenes.PruneMessages(bgCtx, sceneID, 5)
+				log.Println("Scene summarized successfully.")
+			} else {
+				log.Printf("Summarization failed: %v", err)
+			}
+		}
+	}(sc.ID, sc.Summary)
+
+	return nil
 }

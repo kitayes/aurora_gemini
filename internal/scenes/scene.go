@@ -134,3 +134,26 @@ SET location_id = ?, location_name = ?
 WHERE is_active = 1`, v, locName)
 	return err
 }
+
+func (s *Service) GetMessageCount(ctx context.Context, sceneID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scene_messages WHERE scene_id = ?", sceneID).Scan(&count)
+	return count, err
+}
+
+func (s *Service) UpdateSummary(ctx context.Context, sceneID int64, newSummary string) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE scenes SET summary = ? WHERE id = ?", newSummary, sceneID)
+	return err
+}
+
+func (s *Service) PruneMessages(ctx context.Context, sceneID int64, keep int) error {
+	_, err := s.db.ExecContext(ctx, `
+        DELETE FROM scene_messages 
+        WHERE id NOT IN (
+            SELECT id FROM scene_messages 
+            WHERE scene_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT ?
+        ) AND scene_id = ?`, sceneID, keep, sceneID)
+	return err
+}
