@@ -16,14 +16,6 @@ func NewService(db *sql.DB) *Service {
 	return &Service{db: db}
 }
 
-func (s *Service) SetGMMode(ctx context.Context, sceneID int64, mode string) error {
-	if mode != "human" && mode != "ai_assist" && mode != "ai_full" {
-		return errors.New("invalid gm mode")
-	}
-	_, err := s.db.ExecContext(ctx, `UPDATE scenes SET gm_mode=? WHERE id=?`, mode, sceneID)
-	return err
-}
-
 func (s *Service) EnsureDefaultScene() error {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM scenes WHERE is_active = 1`).Scan(&count)
@@ -34,7 +26,7 @@ func (s *Service) EnsureDefaultScene() error {
 		return nil
 	}
 	_, err = s.db.Exec(`INSERT INTO scenes (name, location_name, gm_mode, is_active, summary) 
-VALUES ('Основная сцена', 'Столица Авроры', 0, 1, 'Начало кампании.')`)
+VALUES ('Основная сцена', 'Столица Авроры', '0', 1, 'Начало кампании.')`)
 	return err
 }
 
@@ -45,10 +37,8 @@ SELECT
   IFNULL(location_id, 0),
   IFNULL(location_name, 'Неизвестно'),
   IFNULL(name, 'Сцена'),
-  IFNULL(gm_mode, 0),
-  IFNULL(status, 'active'),
+  CASE WHEN gm_mode = 'ai_assist' OR gm_mode = '0' THEN 0 ELSE 1 END,
   IFNULL(summary, ''),
-  IFNULL(context, ''),
   IFNULL(is_active, 1),
   created_at
 FROM scenes
@@ -64,15 +54,16 @@ LIMIT 1
 		&sc.LocationName,
 		&sc.Name,
 		&sc.GMMode,
-		&sc.Status,
 		&sc.Summary,
-		&sc.Context,
 		&sc.IsActive,
 		&sc.CreatedAt,
 	)
 	if err != nil {
 		return models.Scene{}, err
 	}
+
+	sc.Status = "active"
+
 	return sc, nil
 }
 
@@ -124,6 +115,23 @@ LIMIT ?
 	return result, nil
 }
 
+func (s *Service) SetGMMode(ctx context.Context, sceneID int64, mode string) error {
+	if mode != "human" && mode != "ai_assist" && mode != "ai_full" {
+		return errors.New("invalid gm mode")
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE scenes SET gm_mode=? WHERE id=?`, mode, sceneID)
+	return err
+}
+
+func (s *Service) SetActiveSceneLocation(ctx context.Context, locID sql.NullInt64, locName string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE scenes 
+SET location_id = ?, location_name = ?
+WHERE is_active = 1
+`, locID, locName)
+	return err
+}
+
 func (s *Service) GetMessageCount(ctx context.Context, sceneID int64) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scene_messages WHERE scene_id = ?", sceneID).Scan(&count)
@@ -144,14 +152,5 @@ func (s *Service) PruneMessages(ctx context.Context, sceneID int64, keep int) er
             ORDER BY created_at DESC 
             LIMIT ?
         ) AND scene_id = ?`, sceneID, keep, sceneID)
-	return err
-}
-
-func (s *Service) SetActiveSceneLocation(ctx context.Context, locID sql.NullInt64, locName string) error {
-	_, err := s.db.ExecContext(ctx, `
-UPDATE scenes 
-SET location_id = ?, location_name = ?
-WHERE is_active = 1
-`, locID, locName)
 	return err
 }

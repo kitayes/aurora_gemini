@@ -97,7 +97,7 @@ type NormalizedCharacterForm struct {
 	Surname    string   `json:"surname"`
 	Nickname   string   `json:"nickname"`
 	Gender     string   `json:"gender"`
-	Age        string   `json:"age"`
+	Age        int      `json:"age"`
 	Race       string   `json:"race"`
 	Class      string   `json:"class"`
 	Country    string   `json:"country"`
