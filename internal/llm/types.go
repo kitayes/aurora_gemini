@@ -16,6 +16,12 @@ type Client interface {
 	AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error)
 }
 
+type GenOptions struct {
+	Model       string
+	Temperature float64
+	MaxTokens   int
+}
+
 type PlayerContext struct {
 	Character     models.Character
 	Scene         models.Scene

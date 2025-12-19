@@ -15,6 +15,15 @@ import (
 	"aurora/internal/lore"
 )
 
+const (
+	// ModelFast: Анкеты, проверки, быстрые ответы Лапидария
+	ModelFast = "gemini-2.5-flash-lite"
+	// ModelSmart: Бой, квесты, обычные диалоги (баланс)
+	ModelSmart = "gemini-2.5-flash"
+	// ModelPro: Гейм-мастер, сложный сюжет, важные решения
+	ModelPro = "gemini-3.0-pro-preview"
+)
+
 type GeminiClient struct {
 	apiKey   string
 	model    string
@@ -28,21 +37,17 @@ type GeminiClient struct {
 
 func NewGeminiClient(apiKey, model string, loreRepo lore.Repository) *GeminiClient {
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = ModelSmart
 	}
 	return &GeminiClient{
 		apiKey:          apiKey,
 		model:           model,
 		loreRepo:        loreRepo,
-		client:          &http.Client{Timeout: 60 * time.Second},
+		client:          &http.Client{Timeout: 90 * time.Second},
 		temperature:     0.9,
 		topP:            0.95,
 		maxOutputTokens: 8192,
 	}
-}
-
-func (c *GeminiClient) GeneratePlain(ctx context.Context, prompt string) (string, error) {
-	return c.callGenerateContent(ctx, prompt)
 }
 
 type geminiRequest struct {
@@ -80,7 +85,7 @@ type geminiResponse struct {
 	} `json:"error"`
 }
 
-func (c *GeminiClient) callGenerateContent(ctx context.Context, prompt string) (string, error) {
+func (c *GeminiClient) callGenerateContent(ctx context.Context, prompt string, opts *GenOptions) (string, error) {
 	var reqBody geminiRequest
 	reqBody.Contents = append(reqBody.Contents, struct {
 		Role  string `json:"role,omitempty"`
@@ -93,16 +98,33 @@ func (c *GeminiClient) callGenerateContent(ctx context.Context, prompt string) (
 			Text string `json:"text"`
 		}{{Text: prompt}},
 	})
-	reqBody.GenerationConfig.Temperature = c.temperature
+
+	currentModel := c.model
+	temp := c.temperature
+	maxTokens := c.maxOutputTokens
+
+	if opts != nil {
+		if opts.Model != "" {
+			currentModel = opts.Model
+		}
+		if opts.Temperature > 0 {
+			temp = opts.Temperature
+		}
+		if opts.MaxTokens > 0 {
+			maxTokens = opts.MaxTokens
+		}
+	}
+
+	reqBody.GenerationConfig.Temperature = temp
 	reqBody.GenerationConfig.TopP = c.topP
-	reqBody.GenerationConfig.MaxOutputTokens = c.maxOutputTokens
+	reqBody.GenerationConfig.MaxOutputTokens = maxTokens
 
 	b, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", err
 	}
 
-	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", url.PathEscape(c.model))
+	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", url.PathEscape(currentModel))
 	u := endpoint + "?key=" + url.QueryEscape(c.apiKey)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", u, bytes.NewReader(b))
@@ -122,11 +144,9 @@ func (c *GeminiClient) callGenerateContent(ctx context.Context, prompt string) (
 	var gr geminiResponse
 	_ = json.Unmarshal(bodyBytes, &gr)
 
-	if len(gr.Candidates) > 0 {
-		log.Printf("GEMINI finishReason=%q parts=%d", gr.Candidates[0].FinishReason, len(gr.Candidates[0].Content.Parts))
-	}
 	if gr.UsageMetadata != nil {
-		log.Printf("GEMINI tokens prompt=%d cand=%d total=%d",
+		log.Printf("[%s] tokens prompt=%d cand=%d total=%d",
+			currentModel,
 			gr.UsageMetadata.PromptTokenCount,
 			gr.UsageMetadata.CandidatesTokenCount,
 			gr.UsageMetadata.TotalTokenCount,
@@ -154,6 +174,15 @@ func (c *GeminiClient) callGenerateContent(ctx context.Context, prompt string) (
 	return sb.String(), nil
 }
 
+func (c *GeminiClient) GeneratePlain(ctx context.Context, prompt string) (string, error) {
+	opts := &GenOptions{
+		Model:       ModelFast,
+		Temperature: 0.1,
+		MaxTokens:   4000,
+	}
+	return c.callGenerateContent(ctx, prompt, opts)
+}
+
 func (c *GeminiClient) GenerateForPlayer(ctx context.Context, pCtx PlayerContext) (string, error) {
 	systemPrompt := BuildPlayerSystemPrompt()
 	baseLore := c.loreRepo.GetCoreLore()
@@ -167,7 +196,8 @@ func (c *GeminiClient) GenerateForPlayer(ctx context.Context, pCtx PlayerContext
 		"\n[СООБЩЕНИЕ ИГРОКА]\n" + pCtx.PlayerMessage,
 	}, "\n\n")
 
-	return c.callGenerateContent(ctx, prompt)
+	opts := &GenOptions{Model: ModelSmart}
+	return c.callGenerateContent(ctx, prompt, opts)
 }
 
 func (c *GeminiClient) GenerateForGM(ctx context.Context, prompt string) (string, error) {
@@ -184,15 +214,21 @@ func (c *GeminiClient) GenerateForGM(ctx context.Context, prompt string) (string
 
 	full += "\n\nПОМНИ: ты ГМ. Прошедшее время. Жёсткий реализм. В конце — выбор или открытый вопрос."
 
-	reply, err := c.callGenerateContent(ctx, full)
+	opts := &GenOptions{
+		Model:       ModelPro,
+		Temperature: 0.9,
+		MaxTokens:   8192,
+	}
+
+	reply, err := c.callGenerateContent(ctx, full, opts)
 	if err != nil {
 		return "", err
 	}
 
 	reply = TrimWeirdTail(reply)
-
 	reply = EnsureEndingChoice(reply)
 
+	// Guardrails (валидацию) лучше тоже делать через Smart или Pro, но с низкой температурой
 	cfg := GuardrailsConfig{
 		MinWordsLore:  320,
 		MinWordsFight: 140,
@@ -209,8 +245,9 @@ func (c *GeminiClient) GenerateForGM(ctx context.Context, prompt string) (string
 			reply,
 			validation,
 		)
+		fixOpts := &GenOptions{Model: ModelSmart, Temperature: 0.3}
+		fixed, fixErr := c.callGenerateContent(ctx, repairPrompt, fixOpts)
 
-		fixed, fixErr := c.callGenerateContent(ctx, repairPrompt)
 		if fixErr == nil && strings.TrimSpace(fixed) != "" {
 			reply = TrimWeirdTail(fixed)
 			reply = EnsureEndingChoice(reply)
@@ -231,7 +268,12 @@ func (c *GeminiClient) GenerateQuestProgress(ctx context.Context, qCtx QuestProg
 		prompt,
 	}, "\n\n")
 
-	raw, err := c.callGenerateContent(ctx, full)
+	opts := &GenOptions{
+		Model:       ModelSmart,
+		Temperature: 0.4,
+	}
+
+	raw, err := c.callGenerateContent(ctx, full, opts)
 	if err != nil {
 		return QuestProgressResult{}, err
 	}
@@ -249,7 +291,12 @@ func (c *GeminiClient) GenerateCombatTurn(ctx context.Context, cCtx CombatContex
 		prompt,
 	}, "\n\n")
 
-	raw, err := c.callGenerateContent(ctx, full)
+	opts := &GenOptions{
+		Model:       ModelSmart,
+		Temperature: 0.4,
+	}
+
+	raw, err := c.callGenerateContent(ctx, full, opts)
 	if err != nil {
 		return CombatResult{}, err
 	}
@@ -258,10 +305,8 @@ func (c *GeminiClient) GenerateCombatTurn(ctx context.Context, cCtx CombatContex
 
 func (c *GeminiClient) AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error) {
 	baseLore := c.loreRepo.GetCoreLore()
-
 	searchTags := append(pCtx.CustomTags, question)
 	loreBlocks := c.loreRepo.SelectRelevant(pCtx.LocationTag, pCtx.FactionTag, searchTags)
-
 	contextBlock := BuildPlayerContextBlock(pCtx, baseLore, loreBlocks)
 
 	fullPrompt := strings.Join([]string{
@@ -272,5 +317,38 @@ func (c *GeminiClient) AskLapidarius(ctx context.Context, pCtx PlayerContext, qu
 		fmt.Sprintf("Герой спрашивает: \"%s\"", question),
 	}, "\n\n")
 
-	return c.callGenerateContent(ctx, fullPrompt)
+	opts := &GenOptions{
+		Model:       ModelFast,
+		Temperature: 0.9,
+	}
+
+	return c.callGenerateContent(ctx, fullPrompt, opts)
+}
+
+func (c *GeminiClient) Summarize(ctx context.Context, oldSummary string, newMessages []string) (string, error) {
+	textBlock := strings.Join(newMessages, "\n")
+	prompt := fmt.Sprintf(`
+ТЫ — МОДУЛЬ СЖАТИЯ ПАМЯТИ.
+Твоя задача: обновить краткое содержание (саммари) сцены, добавив в него новые события.
+
+[ТЕКУЩЕЕ САММАРИ]:
+%s
+
+[НОВЫЕ СОБЫТИЯ]:
+%s
+
+ИНСТРУКЦИЯ:
+1. Объедини старое и новое в один связный текст (до 150 слов).
+2. Сохрани имена NPC, важные решения и полученные предметы.
+3. Убери "воду" и пустые диалоги.
+4. Пиши в прошедшем времени.
+
+НОВОЕ САММАРИ:`, oldSummary, textBlock)
+
+	opts := &GenOptions{
+		Model:       ModelFast,
+		Temperature: 0.2,
+	}
+
+	return c.callGenerateContent(ctx, prompt, opts)
 }

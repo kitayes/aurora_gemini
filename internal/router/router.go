@@ -141,7 +141,6 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			return
 		}
 
-		// 1️⃣ Если сейчас идёт ввод анкеты — перехватываем ВСЁ
 		if r.formAppendIfActive(fromID, peerID, text) {
 			return
 		}
@@ -152,29 +151,41 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 		}
 
 		if r.gmService.IsGM(int64(fromID)) && strings.HasPrefix(lower, "!gm") {
-			handled, reply := r.gmService.HandleCommand(
-				ctx, int64(peerID), int64(fromID), text,
-			)
+			handled, reply := r.gmService.HandleCommand(ctx, int64(peerID), int64(fromID), text)
 			if handled && reply != "" {
 				r.send(peerID, reply)
 			}
 			return
 		}
 
-		if strings.HasPrefix(lower, "!Лапидарий") || strings.HasPrefix(lower, "!сфера") {
-			parts := strings.Fields(text)
-			question := ""
-			if len(parts) > 1 {
-				question = strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
-				question = strings.TrimLeft(question, " ,.!?:")
+		isExplicitName := strings.HasPrefix(lower, "лапидарий") ||
+			strings.HasPrefix(lower, "!лапидарий") ||
+			strings.HasPrefix(lower, "сфера") ||
+			strings.HasPrefix(lower, "!сфера")
+
+		isReplyToBot := m.ReplyMessage != nil && m.ReplyMessage.FromID < 0 && !strings.HasPrefix(text, "!")
+
+		if isExplicitName || isReplyToBot {
+			question := text
+
+			if isExplicitName {
+				parts := strings.Fields(text)
+				if len(parts) > 0 {
+					firstWordLen := len(parts[0])
+					if len(text) > firstWordLen {
+						question = text[firstWordLen:]
+					} else {
+						question = ""
+					}
+				}
 			}
+
+			question = strings.TrimSpace(strings.TrimLeft(question, " ,.!?:"))
 
 			if question == "" {
 				r.send(peerID, "Сфера тихо гудит. Ей нужен вопрос.")
 				return
 			}
-
-			r.send(peerID, "⏳ Сфера обращается к архивам...")
 
 			ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
 			if err != nil {
@@ -188,7 +199,6 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			}
 
 			history, _ := r.scenes.GetLastMessagesSummary(ctx, sc.ID, 5)
-
 			qs, _ := r.questService.GetActiveForCharacter(ctx, ch.ID)
 
 			pCtx := llm.PlayerContext{
@@ -218,17 +228,11 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			return
 		}
 
-		if strings.HasPrefix(text, "!") {
-			r.handlePlayerCommand(ctx, peerID, fromID, text)
-			return
-		}
-
 		if err := r.logSceneMessage(ctx, int64(fromID), text); err != nil {
 			log.Printf("log scene msg error: %v", err)
 		}
 	})
 }
-
 func (r *Router) logSceneMessage(ctx context.Context, fromID int64, text string) error {
 	sc, err := r.scenes.GetActiveScene(ctx)
 	if err != nil {
