@@ -53,6 +53,10 @@ func (c *OpenAIClient) AskLapidarius(ctx context.Context, pCtx PlayerContext, qu
 	return "Модуль Лапидария не поддерживается в OpenAI версии. Переключитесь на Gemini.", nil
 }
 
+func (c *OpenAIClient) ClassifyIntent(ctx context.Context, text string, isGM bool) (IntentResult, error) {
+	return IntentResult{Type: IntentChat}, nil
+}
+
 func (c *OpenAIClient) Summarize(ctx context.Context, oldSummary string, newMessages []string) (string, error) {
 	textBlock := strings.Join(newMessages, "\n")
 	prompt := fmt.Sprintf(`

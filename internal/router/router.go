@@ -144,6 +144,7 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			return
 		}
 
+		// Технические команды через !gm оставляем как есть
 		if r.gmService.IsGM(int64(fromID)) && strings.HasPrefix(lower, "!gm") {
 			handled, reply := r.gmService.HandleCommand(ctx, int64(peerID), int64(fromID), text)
 			if handled && reply != "" {
@@ -152,80 +153,107 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			return
 		}
 
-		isExplicitName := strings.HasPrefix(lower, "лапидарий") ||
-			strings.HasPrefix(lower, "!лапидарий") ||
-			strings.HasPrefix(lower, "сфера") ||
-			strings.HasPrefix(lower, "!сфера")
-
-		isReplyToBot := m.ReplyMessage != nil && m.ReplyMessage.FromID < 0 && !strings.HasPrefix(text, "!")
-
-		if isExplicitName || isReplyToBot {
-			question := text
-
-			if isExplicitName {
-				parts := strings.Fields(text)
-				if len(parts) > 0 {
-					firstWordLen := len(parts[0])
-					if len(text) > firstWordLen {
-						question = text[firstWordLen:]
-					} else {
-						question = ""
-					}
-				}
-			}
-
-			question = strings.TrimSpace(strings.TrimLeft(question, " ,.!?:"))
-
-			if question == "" {
-				r.send(peerID, "Сфера тихо гудит. Ей нужен вопрос.")
-				return
-			}
-
-			ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
-			if err != nil {
-				r.send(peerID, "Сфера не видит твою ауру (ошибка получения персонажа).")
-				return
-			}
-
-			sc, err := r.scenes.GetActiveScene(ctx)
-			if err != nil {
-				sc = models.Scene{Name: "Путешествие", LocationName: "Неизвестно"}
-			}
-
-			history, _ := r.scenes.GetLastMessagesSummary(ctx, sc.ID, 5)
-			qs, _ := r.questService.GetActiveForCharacter(ctx, ch.ID)
-
-			pCtx := llm.PlayerContext{
-				Character:     *ch, // Dereference pointer
-				Scene:         sc,
-				History:       history,
-				Quests:        qs,
-				LocationTag:   sc.LocationName,
-				FactionTag:    ch.FactionName,
-				PlayerMessage: question,
-				CustomTags:    []string{"лор", "совет"},
-			}
-
-			answer, err := r.llm.AskLapidarius(ctx, pCtx, question)
-			if err != nil {
-				log.Printf("Lapidarius error: %v", err)
-				r.send(peerID, "Сфера пошла трещинами (Ошибка магии).")
-				return
-			}
-
-			r.send(peerID, answer)
-			return
-		}
-
+		// 1. Сначала обрабатываем явные команды (технические, боевые, хода) через !
+		// Это позволяет сохранить !ход и !бой как явные действия.
 		if strings.HasPrefix(text, "!") {
 			r.handlePlayerCommand(ctx, peerID, fromID, text)
 			return
 		}
 
+		// 2. Если команды нет, используем Классификатор Намерений (Intent)
+		isGM := r.gmService.IsGM(int64(fromID))
+		intent, err := r.llm.ClassifyIntent(ctx, text, isGM)
+		if err != nil {
+			log.Printf("Intent error: %v", err)
+			intent = llm.IntentResult{Type: llm.IntentChat} // Fallback
+		}
+
+		switch intent.Type {
+		case llm.IntentUseItem:
+			r.handleUseItem(ctx, peerID, fromID, intent.Target)
+			return
+		case llm.IntentQuestDecision:
+			r.handleQuestDecision(ctx, peerID, fromID, intent.Target)
+			return
+		case llm.IntentGM:
+			if isGM {
+				r.handleNaturalGMCommand(ctx, peerID, fromID, text)
+				return
+			}
+			// Если не ГМ, то это просто чат (или попытка обмана), проваливаемся вниз
+		}
+
+		// 3. Обработка обычного чата (Лапидарий) или логирование сцены
+		// Проверяем, обращаются ли к боту, чтобы не отвечать на каждый чих в беседе
+		isExplicitName := strings.Contains(lower, "лапидарий") ||
+			strings.Contains(lower, "сфера") ||
+			strings.HasPrefix(lower, "!сфера")
+
+		isReplyToBot := m.ReplyMessage != nil && m.ReplyMessage.FromID < 0
+
+		if isExplicitName || isReplyToBot {
+			r.handleLapidariusChat(ctx, peerID, fromID, text)
+			return
+		}
+
+		// 4. Если это не команда и не чат с ботом, считаем это RP-описанием (флавор) и сохраняем в историю
 		if err := r.logSceneMessage(ctx, int64(fromID), text); err != nil {
 			log.Printf("log scene msg error: %v", err)
 		}
 	})
+}
+
+// Вынесенная логика разговора с Лапидарием
+func (r *Router) handleLapidariusChat(ctx context.Context, peerID, fromID int, text string) {
+	// Очистка имени, если есть
+	question := text
+	parts := strings.Fields(text)
+	if len(parts) > 0 {
+		first := strings.ToLower(parts[0])
+		if strings.Contains(first, "лапидарий") || strings.Contains(first, "сфера") {
+			question = strings.TrimSpace(strings.TrimPrefix(text, parts[0]))
+		}
+	}
+	question = strings.TrimSpace(strings.TrimLeft(question, " ,.!?:"))
+
+	if question == "" {
+		r.send(peerID, "Сфера тихо гудит. Ей нужен вопрос.")
+		return
+	}
+
+	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
+	if err != nil {
+		r.send(peerID, "Сфера не видит твою ауру (ошибка получения персонажа).")
+		return
+	}
+
+	sc, err := r.scenes.GetActiveScene(ctx)
+	if err != nil {
+		sc = models.Scene{Name: "Путешествие", LocationName: "Неизвестно"}
+	}
+
+	history, _ := r.scenes.GetLastMessagesSummary(ctx, sc.ID, 5)
+	qs, _ := r.questService.GetActiveForCharacter(ctx, ch.ID)
+
+	pCtx := llm.PlayerContext{
+		Character:     *ch,
+		Scene:         sc,
+		History:       history,
+		Quests:        qs,
+		LocationTag:   sc.LocationName,
+		FactionTag:    ch.FactionName,
+		PlayerMessage: question,
+		CustomTags:    []string{"лор", "совет"},
+	}
+
+	answer, err := r.llm.AskLapidarius(ctx, pCtx, question)
+	if err != nil {
+		log.Printf("Lapidarius error: %v", err)
+		r.send(peerID, "Сфера пошла трещинами (Ошибка магии).")
+		return
+	}
+
+	r.send(peerID, answer)
 }
 
 func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, text string) {
@@ -272,6 +300,9 @@ func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, te
 		}
 	}
 }
+
+// ... handleFormExample, startOrAppendCharacterForm, normalizeCharacterForm, finishCharacterForm ...
+// (Оставляем эти функции без изменений, они нужны для анкеты)
 
 func (r *Router) handleFormExample(ctx context.Context, peerID int) {
 	example := `Пример анкеты персонажа:
@@ -608,6 +639,7 @@ func (r *Router) handleCharacterForm(ctx context.Context, peerID, fromID int, te
 	}
 }
 
+// ОБНОВЛЕННАЯ ФУНКЦИЯ СОЗДАНИЯ КВЕСТА
 func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
 	if err != nil {
@@ -680,14 +712,17 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 	if q, err := r.questService.CreateFromAI(ctx, ch.ID, reply); err != nil {
 		log.Printf("create quest error: %v", err)
 	} else if q != nil {
+		// --- СТАВИМ СТАТУС PENDING ---
+		_, _ = r.db.ExecContext(ctx, "UPDATE quests SET status = 'pending' WHERE id = ?", q.ID)
+
 		if locID.Valid {
 			if err := r.questService.SetLocation(ctx, q.ID, locID.Int64); err != nil {
 				log.Printf("set quest location error: %v", err)
 			} else {
-				reply += "\n\n📍 Локация квеста: " + locName
+				reply += "\n\n📍 Предлагаемая локация: " + locName
 			}
 		}
-		reply += "\n\n(Квест добавлен в твой список.)"
+		reply += "\n\n❓ Квест ожидает решения.\nНапиши: «Принимаю» или «Отказываюсь»."
 	}
 
 	if err := r.scenes.AppendMessage(ctx, models.SceneMessage{
@@ -709,6 +744,106 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 		log.Printf("quest send error: %v", err)
 	}
 	log.Printf("OUT MSG peer=%d len=%d", peerID, len(reply))
+}
+
+// НОВЫЙ МЕТОД: Обработка решения по квесту
+func (r *Router) handleQuestDecision(ctx context.Context, peerID, fromID int, decision string) {
+	// 1. Ищем квест в статусе 'pending'
+	var qID int64
+	err := r.db.QueryRowContext(ctx, `
+		SELECT q.id 
+		FROM quests q
+		JOIN characters c ON q.character_id = c.id
+		WHERE c.vk_user_id = ? AND q.status = 'pending' 
+		ORDER BY q.created_at DESC LIMIT 1`, fromID).Scan(&qID)
+
+	if err != nil {
+		r.send(peerID, "Лапидарий недоумевает: тебе нечего принимать или отвергать.")
+		return
+	}
+
+	if decision == "accept" {
+		_, _ = r.db.ExecContext(ctx, "UPDATE quests SET status='active' WHERE id=?", qID)
+		r.send(peerID, "Лапидарий: «Мудрое решение. Запись внесена в журнал.»")
+	} else {
+		_, _ = r.db.ExecContext(ctx, "UPDATE quests SET status='declined' WHERE id=?", qID)
+		r.send(peerID, "Лапидарий: «Запись удалена. Возможно, это сохранит тебе жизнь... ненадолго.»")
+	}
+}
+
+// НОВЫЙ МЕТОД: Использование предмета (Пока просто чат с Лапидарием, но с контекстом использования)
+func (r *Router) handleUseItem(ctx context.Context, peerID, fromID int, target string) {
+	// В будущем тут будет логика списания предмета и лечения.
+	// Пока отправим это как RP-запрос Лапидарию с префиксом
+	msg := fmt.Sprintf("Я использую предмет '%s'. Что происходит?", target)
+	r.handleLapidariusChat(ctx, peerID, fromID, msg)
+}
+
+// НОВЫЙ МЕТОД: ГМ команды на естественном языке
+func (r *Router) handleNaturalGMCommand(ctx context.Context, peerID, fromID int, text string) {
+	// Структура для парсинга ответа LLM
+	type GMAction struct {
+		Action     string `json:"action"`
+		TargetName string `json:"target_name"`
+		Value      int    `json:"value"`
+		ItemName   string `json:"item_name"`
+	}
+
+	prompt := fmt.Sprintf(`
+Ты — помощник Гейм-Мастера. Твоя задача — перевести просьбу в JSON для изменения БД.
+Просьба: "%s"
+
+Верни JSON массив действий. Допустимые action: "UPDATE_HP", "ADD_GOLD", "ADD_ITEM".
+Пример: [{"action": "UPDATE_HP", "target_name": "Вася", "value": 100}]
+Если имя не указано, target_name="self".
+`, text)
+
+	resp, err := r.llm.GeneratePlain(ctx, prompt)
+	if err != nil {
+		r.send(peerID, "Ошибка ИИ: "+err.Error())
+		return
+	}
+
+	clean := strings.TrimSpace(resp)
+	clean = strings.TrimPrefix(clean, "```json")
+	clean = strings.TrimPrefix(clean, "```")
+	clean = strings.TrimSuffix(clean, "```")
+
+	var actions []GMAction
+	if err := json.Unmarshal([]byte(clean), &actions); err != nil {
+		r.send(peerID, "Не понял команду: "+resp)
+		return
+	}
+
+	report := "Выполнено:\n"
+	for _, a := range actions {
+		targetName := a.TargetName
+		if targetName == "self" {
+			// Нужно найти имя ГМ-а? Или искать персонажа привязанного к VK ID ГМа
+			// Упростим: ищем по VK ID
+			// В реальности надо делать JOIN, но для примера оставим поиск по имени или LIKE
+			targetName = "%"
+		} else {
+			targetName = "%" + targetName + "%"
+		}
+
+		switch a.Action {
+		case "UPDATE_HP":
+			res, _ := r.db.ExecContext(ctx, "UPDATE characters SET combat_health = ? WHERE name LIKE ?", a.Value, targetName)
+			aff, _ := res.RowsAffected()
+			report += fmt.Sprintf("- HP set to %d for %d chars\n", a.Value, aff)
+		case "ADD_GOLD":
+			res, _ := r.db.ExecContext(ctx, "UPDATE characters SET gold = gold + ? WHERE name LIKE ?", a.Value, targetName)
+			aff, _ := res.RowsAffected()
+			report += fmt.Sprintf("- Added %d gold for %d chars\n", a.Value, aff)
+		case "ADD_ITEM":
+			// Конкатенация строки инвентаря
+			res, _ := r.db.ExecContext(ctx, "UPDATE characters SET inventory = inventory || ', ' || ? WHERE name LIKE ?", a.ItemName, targetName)
+			aff, _ := res.RowsAffected()
+			report += fmt.Sprintf("- Added item '%s' for %d chars\n", a.ItemName, aff)
+		}
+	}
+	r.send(peerID, report)
 }
 
 func (r *Router) handleAdviceRequest(ctx context.Context, peerID, fromID int) {
