@@ -181,8 +181,6 @@ func BuildPlayerContextBlock(pctx PlayerContext, coreLore string, loreChunks []l
 	)
 }
 
-// ---- Прогресс квеста ----
-
 func BuildQuestSystemPrompt() string {
 	return `Ты — системный помощник по квестам в мире "Аврора".
 Твоя задача — по действиям игрока определить прогресс квеста, его завершение и награду, уважая экономику мира.
@@ -261,33 +259,30 @@ func BuildQuestProgressPrompt(qCtx QuestProgressContext, coreLore string, loreCh
 }
 
 func BuildCombatSystemPrompt() string {
-	return `Ты — боевой ведущий в мире "Аврора".
+	return `ТЫ — ГЕЙМ-МАСТЕР (GM) В СУРОВОМ МИРЕ ТЕМНОГО ФЭНТЕЗИ.
+Твоя задача — симулировать ход боя на основе заявки игрока и характеристик его персонажа.
 
-ТВОЯ ЗАДАЧА:
-1. Интерпретировать действия персонажа.
-2. Рассчитать (логически) исход раунда.
-3. Описать ход боя и последствия ХУДОЖЕСТВЕННО.
+ПРАВИЛА СИМУЛЯЦИИ:
+1. **ПРОВЕРКА СПОСОБНОСТЕЙ (ВАЖНО):** Игрок может написать что угодно (например, "Призываю метеорит"), но ты должен свериться с блоком [ПЕРСОНАЖ].
+   - Если у персонажа НЕТ соответствующей магии, навыка или предмета — действие ГАРАНТИРОВАННО ПРОВАЛИВАЕТСЯ.
+   - Опиши это как неудачную попытку: герой машет руками, но ничего не происходит, или он спотыкается, или его "заклинание" оказывается пшиком.
+   - НЕ ДАВАЙ игроку силу, которой нет в его анкете.
+   - Если боевой потенциал низок (0-20), герой — новичок. Он не может убивать взглядом.
 
-ВАЖНЫЕ ПРАВИЛА ОПИСАНИЯ (ROUND_DESC):
-- ЗАПРЕЩЕНО писать цифры урона в тексте (не пиши "-10 HP", "урон 5").
-- Вместо цифр описывай последствия: "Меч рассек плечо", "Ты чувствуешь хруст ребер", "Царапина".
-- Опирайся на текущее состояние героя. Если HP мало — описывай боль и слабость.
+2. **Реализм и Жестокость:** Враги не поддаются. Раны болезненны. Броня защищает.
+3. **Формат JSON:** Твой ответ ВСЕГДА должен быть валидным JSON.
+4. **Баланс:** Не убивай игрока с одного удара, если разница сил не колоссальна. Но и не давай ему легких побед.
 
-ФОРМАТ ОТВЕТА (Строго соблюдай блоки):
-
-[ROUND_DESC]
-<1–3 абзаца художественного описания. БЕЗ цифр HP.>
-
-[PLAYER_STATE]
-здоровье: <число 0–100>
-состояние: <кратко: жив/ранен/тяжело ранен/на грани>
-
-[ENEMY_STATE]
-здоровье: <число 0–100>
-состояние: <кратко: жив/ранен/мертв/скрылся>
-
-[COMBAT_STATUS]
-ongoing / player_win / player_lose / retreat / stalemate`
+ФОРМАТ ОТВЕТА (JSON):
+{
+  "round_desc": "Художественное описание того, что произошло за ход (макс 100 слов). Опиши действие игрока (успех/провал) и ответ врага.",
+  "player_hp": 90, // Новое здоровье игрока
+  "enemy_hp": 80,  // Новое здоровье врага
+  "enemy_status": "ранен в плечо", // Краткий статус врага
+  "winner": "none", // "player", "enemy" или "none" (если бой продолжается)
+  "is_finished": false // true, если кто-то умер или сбежал
+}
+`
 }
 
 func BuildCombatPrompt(cCtx CombatContext, coreLore string, loreChunks []lore.Chunk) string {
@@ -384,4 +379,58 @@ func BuildLapidariusSystemPrompt() string {
 
 ТВОЯ ЗАДАЧА:
 Используя [КОНТЕКСТ], ответь на [ВОПРОС ПЕРСОНАЖА]. Если ответа нет в контексте, скажи, что "архивы повреждены", но не выдумывай.`
+}
+
+func buildCharacterBlock(ch models.Character) string {
+	abilities := ch.Abilities
+	if abilities == "" {
+		abilities = "Нет особых способностей"
+	}
+	inventory := ch.Inventory
+	if inventory == "" {
+		inventory = "Пусто"
+	}
+
+	return fmt.Sprintf(`[ПЕРСОНАЖ]
+Имя: %s
+Раса: %s
+Класс: %s
+Здоровье: %d
+Боевой потенциал (CombatPower): %d
+Способности: %s
+Инвентарь: %s
+Эффекты: %s
+`, ch.Name, ch.Race, ch.Class, ch.CombatHealth, ch.CombatPower, abilities, inventory, buildEffectsList(ch.Effects))
+}
+
+func buildEffectsList(effects []models.Effect) string {
+	if len(effects) == 0 {
+		return "Нет"
+	}
+	var names []string
+	for _, e := range effects {
+		if !e.IsHidden {
+			names = append(names, e.Name)
+		}
+	}
+	if len(names) == 0 {
+		return "Нет"
+	}
+	return strings.Join(names, ", ")
+}
+
+func buildSceneBlock(sc models.Scene) string {
+	return fmt.Sprintf(`[СЦЕНА]
+Название: %s
+Локация: %s
+Описание: %s
+`, sc.Name, sc.LocationName, sc.Summary)
+}
+
+func buildQuestBlock(q models.Quest) string {
+	return fmt.Sprintf(`[АКТИВНЫЙ КВЕСТ]
+Название: %s
+Описание: %s
+Стадия: %d
+`, q.Title, q.Description, q.Stage)
 }

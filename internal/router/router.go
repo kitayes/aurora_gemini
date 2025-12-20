@@ -144,7 +144,7 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			return
 		}
 
-		// Технические команды через !gm оставляем как есть
+		// Технические команды через !gm (старые, жесткие)
 		if r.gmService.IsGM(int64(fromID)) && strings.HasPrefix(lower, "!gm") {
 			handled, reply := r.gmService.HandleCommand(ctx, int64(peerID), int64(fromID), text)
 			if handled && reply != "" {
@@ -153,38 +153,37 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			return
 		}
 
-		// 1. Сначала обрабатываем явные команды (технические, боевые, хода) через !
-		// Это позволяет сохранить !ход и !бой как явные действия.
 		if strings.HasPrefix(text, "!") {
+			if strings.HasPrefix(lower, "!админ повелевает") {
+				if r.gmService.IsGM(int64(fromID)) {
+					parts := strings.SplitN(text, " ", 3)
+					if len(parts) >= 3 {
+						r.handleNaturalGMCommand(ctx, peerID, fromID, parts[2])
+					} else {
+						r.send(peerID, "Артурианский, вы забыли указать свою волю. Пример: !админ повелевает вылечить всех.")
+					}
+				} else {
+					r.send(peerID, "У тебя нет власти говорить мне подобное.")
+				}
+				return
+			}
+
 			r.handlePlayerCommand(ctx, peerID, fromID, text)
 			return
 		}
 
-		// 2. Если команды нет, используем Классификатор Намерений (Intent)
 		isGM := r.gmService.IsGM(int64(fromID))
 		intent, err := r.llm.ClassifyIntent(ctx, text, isGM)
 		if err != nil {
-			log.Printf("Intent error: %v", err)
-			intent = llm.IntentResult{Type: llm.IntentChat} // Fallback
+			intent = llm.IntentResult{Type: llm.IntentChat}
 		}
 
 		switch intent.Type {
 		case llm.IntentUseItem:
 			r.handleUseItem(ctx, peerID, fromID, intent.Target)
 			return
-		case llm.IntentQuestDecision:
-			r.handleQuestDecision(ctx, peerID, fromID, intent.Target)
-			return
-		case llm.IntentGM:
-			if isGM {
-				r.handleNaturalGMCommand(ctx, peerID, fromID, text)
-				return
-			}
-			// Если не ГМ, то это просто чат (или попытка обмана), проваливаемся вниз
 		}
 
-		// 3. Обработка обычного чата (Лапидарий) или логирование сцены
-		// Проверяем, обращаются ли к боту, чтобы не отвечать на каждый чих в беседе
 		isExplicitName := strings.Contains(lower, "лапидарий") ||
 			strings.Contains(lower, "сфера") ||
 			strings.HasPrefix(lower, "!сфера")
@@ -196,16 +195,13 @@ func (r *Router) RegisterHandlers(lp *longpoll.LongPoll) {
 			return
 		}
 
-		// 4. Если это не команда и не чат с ботом, считаем это RP-описанием (флавор) и сохраняем в историю
 		if err := r.logSceneMessage(ctx, int64(fromID), text); err != nil {
 			log.Printf("log scene msg error: %v", err)
 		}
 	})
 }
 
-// Вынесенная логика разговора с Лапидарием
 func (r *Router) handleLapidariusChat(ctx context.Context, peerID, fromID int, text string) {
-	// Очистка имени, если есть
 	question := text
 	parts := strings.Fields(text)
 	if len(parts) > 0 {
@@ -260,6 +256,13 @@ func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, te
 	lower := strings.ToLower(strings.TrimSpace(text))
 
 	switch {
+	// --- СТРОГИЕ КОМАНДЫ ---
+	case strings.HasPrefix(lower, "!принимаю"):
+		r.handleQuestDecision(ctx, peerID, fromID, "accept")
+	case strings.HasPrefix(lower, "!отказываюсь"):
+		r.handleQuestDecision(ctx, peerID, fromID, "decline")
+	// -----------------------------
+
 	case strings.HasPrefix(lower, "!локация список"):
 		r.handleLocationList(ctx, peerID)
 	case strings.HasPrefix(lower, "!локация текущая"):
@@ -293,16 +296,13 @@ func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, te
 		_, err := r.vk.MessagesSend(api.Params{
 			"peer_id":   peerID,
 			"random_id": time.Now().UnixNano(),
-			"message":   "Неизвестная команда. Доступно: !квест, !совет, !статус, !ход, !бой, !анкета.",
+			"message":   "Неизвестная команда. Доступно: !квест, !принимаю, !отказываюсь, !статус, !ход, !бой.",
 		})
 		if err != nil {
 			log.Printf("unknown cmd send error: %v", err)
 		}
 	}
 }
-
-// ... handleFormExample, startOrAppendCharacterForm, normalizeCharacterForm, finishCharacterForm ...
-// (Оставляем эти функции без изменений, они нужны для анкеты)
 
 func (r *Router) handleFormExample(ctx context.Context, peerID int) {
 	example := `Пример анкеты персонажа:
@@ -602,7 +602,7 @@ func (r *Router) handleCharacterForm(ctx context.Context, peerID, fromID int, te
 		return
 	}
 
-	// Локация необязательна: пытаемся взять из сцены, но если сцена падает/пустая — дефолт
+	// Локация необязательна
 	if form.LocationName == "" {
 		if sc, err := r.scenes.GetActiveScene(ctx); err == nil && sc.LocationName != "" {
 			form.LocationName = sc.LocationName
@@ -646,6 +646,26 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 		log.Printf("get character error: %v", err)
 		return
 	}
+
+	// 1. --- НОВАЯ ПРОВЕРКА: Если уже есть квест, не даем новый ---
+	var existingStatus string
+	err = r.db.QueryRowContext(ctx, `
+		SELECT status FROM quests 
+		WHERE character_id = ? AND status IN ('active', 'pending') 
+		LIMIT 1`, ch.ID).Scan(&existingStatus)
+
+	if err == nil {
+		if existingStatus == "active" {
+			r.send(peerID, "У тебя уже есть активный квест. Сначала заверши его (!статус).")
+			return
+		}
+		if existingStatus == "pending" {
+			r.send(peerID, "У тебя висит предложение квеста. Реши: !принимаю или !отказываюсь.")
+			return
+		}
+	}
+	// -------------------------------------------------------------
+
 	sc, err := r.scenes.GetActiveScene(ctx)
 	if err != nil {
 		log.Printf("get scene error: %v", err)
@@ -656,11 +676,8 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 		log.Printf("history error: %v", err)
 		return
 	}
-	activeQuests, err := r.questService.GetActiveForCharacter(ctx, ch.ID)
-	if err != nil {
-		log.Printf("quests error: %v", err)
-		return
-	}
+
+	activeQuests := []models.Quest{}
 
 	pctx := llm.PlayerContext{
 		Character:     *ch, // Dereference
@@ -674,17 +691,9 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 	}
 
 	reply, err := r.llm.GenerateForPlayer(ctx, pctx)
-	log.Printf("LLM REPLY len=%d tail=%q", len(reply), lastN(reply, 80))
 	if err != nil {
 		log.Printf("llm error: %v", err)
-		_, sendErr := r.vk.MessagesSend(api.Params{
-			"peer_id":   peerID,
-			"random_id": time.Now().UnixNano(),
-			"message":   "Духи мира молчат. Попробуй ещё раз позже.",
-		})
-		if sendErr != nil {
-			log.Printf("quest llm fail send error: %v", sendErr)
-		}
+		r.send(peerID, "Духи мира молчат. Попробуй ещё раз позже.")
 		return
 	}
 
@@ -712,7 +721,7 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 	if q, err := r.questService.CreateFromAI(ctx, ch.ID, reply); err != nil {
 		log.Printf("create quest error: %v", err)
 	} else if q != nil {
-		// --- СТАВИМ СТАТУС PENDING ---
+		// Ставим статус PENDING
 		_, _ = r.db.ExecContext(ctx, "UPDATE quests SET status = 'pending' WHERE id = ?", q.ID)
 
 		if locID.Valid {
@@ -722,7 +731,7 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 				reply += "\n\n📍 Предлагаемая локация: " + locName
 			}
 		}
-		reply += "\n\n❓ Квест ожидает решения.\nНапиши: «Принимаю» или «Отказываюсь»."
+		reply += "\n\n❓ Квест ожидает решения.\nНапиши: !принимаю или !отказываюсь"
 	}
 
 	if err := r.scenes.AppendMessage(ctx, models.SceneMessage{
@@ -735,18 +744,9 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 		log.Printf("scene log error: %v", err)
 	}
 
-	_, err = r.vk.MessagesSend(api.Params{
-		"peer_id":   peerID,
-		"random_id": time.Now().UnixNano(),
-		"message":   reply,
-	})
-	if err != nil {
-		log.Printf("quest send error: %v", err)
-	}
-	log.Printf("OUT MSG peer=%d len=%d", peerID, len(reply))
+	r.send(peerID, reply)
 }
 
-// НОВЫЙ МЕТОД: Обработка решения по квесту
 func (r *Router) handleQuestDecision(ctx context.Context, peerID, fromID int, decision string) {
 	// 1. Ищем квест в статусе 'pending'
 	var qID int64
@@ -766,20 +766,17 @@ func (r *Router) handleQuestDecision(ctx context.Context, peerID, fromID int, de
 		_, _ = r.db.ExecContext(ctx, "UPDATE quests SET status='active' WHERE id=?", qID)
 		r.send(peerID, "Лапидарий: «Мудрое решение. Запись внесена в журнал.»")
 	} else {
-		_, _ = r.db.ExecContext(ctx, "UPDATE quests SET status='declined' WHERE id=?", qID)
-		r.send(peerID, "Лапидарий: «Запись удалена. Возможно, это сохранит тебе жизнь... ненадолго.»")
+		// --- Полное удаление ---
+		_, _ = r.db.ExecContext(ctx, "DELETE FROM quests WHERE id=?", qID)
+		r.send(peerID, "Лапидарий: «Запись стерта, будто её и не было.»")
 	}
 }
 
-// НОВЫЙ МЕТОД: Использование предмета (Пока просто чат с Лапидарием, но с контекстом использования)
 func (r *Router) handleUseItem(ctx context.Context, peerID, fromID int, target string) {
-	// В будущем тут будет логика списания предмета и лечения.
-	// Пока отправим это как RP-запрос Лапидарию с префиксом
 	msg := fmt.Sprintf("Я использую предмет '%s'. Что происходит?", target)
 	r.handleLapidariusChat(ctx, peerID, fromID, msg)
 }
 
-// НОВЫЙ МЕТОД: ГМ команды на естественном языке
 func (r *Router) handleNaturalGMCommand(ctx context.Context, peerID, fromID int, text string) {
 	// Структура для парсинга ответа LLM
 	type GMAction struct {
@@ -817,35 +814,55 @@ func (r *Router) handleNaturalGMCommand(ctx context.Context, peerID, fromID int,
 
 	report := "Выполнено:\n"
 	for _, a := range actions {
-		targetName := a.TargetName
-		if targetName == "self" {
-			// Нужно найти имя ГМ-а? Или искать персонажа привязанного к VK ID ГМа
-			// Упростим: ищем по VK ID
-			// В реальности надо делать JOIN, но для примера оставим поиск по имени или LIKE
-			targetName = "%"
+		// --- Логика определения цели ---
+		var targetSQL string
+		var targetArgs []interface{}
+
+		if a.TargetName == "self" {
+			targetSQL = "vk_user_id = ?"
+			targetArgs = []interface{}{fromID}
 		} else {
-			targetName = "%" + targetName + "%"
+			targetSQL = "name LIKE ?"
+			targetArgs = []interface{}{"%" + a.TargetName + "%"}
 		}
+
+		var res sql.Result
+		var queryErr error
 
 		switch a.Action {
 		case "UPDATE_HP":
-			res, _ := r.db.ExecContext(ctx, "UPDATE characters SET combat_health = ? WHERE name LIKE ?", a.Value, targetName)
-			aff, _ := res.RowsAffected()
-			report += fmt.Sprintf("- HP set to %d for %d chars\n", a.Value, aff)
+			query := "UPDATE characters SET combat_health = ? WHERE " + targetSQL
+			args := append([]interface{}{a.Value}, targetArgs...)
+			res, queryErr = r.db.ExecContext(ctx, query, args...)
+
 		case "ADD_GOLD":
-			res, _ := r.db.ExecContext(ctx, "UPDATE characters SET gold = gold + ? WHERE name LIKE ?", a.Value, targetName)
-			aff, _ := res.RowsAffected()
-			report += fmt.Sprintf("- Added %d gold for %d chars\n", a.Value, aff)
+			query := "UPDATE characters SET gold = gold + ? WHERE " + targetSQL
+			args := append([]interface{}{a.Value}, targetArgs...)
+			res, queryErr = r.db.ExecContext(ctx, query, args...)
+
 		case "ADD_ITEM":
-			// Конкатенация строки инвентаря
-			res, _ := r.db.ExecContext(ctx, "UPDATE characters SET inventory = inventory || ', ' || ? WHERE name LIKE ?", a.ItemName, targetName)
+			query := `UPDATE characters 
+			          SET inventory = CASE 
+			              WHEN inventory IS NULL OR inventory = '' OR inventory = 'Пусто' THEN ? 
+			              ELSE inventory || ', ' || ? 
+			          END 
+			          WHERE ` + targetSQL
+			args := append([]interface{}{a.ItemName, a.ItemName}, targetArgs...)
+			res, queryErr = r.db.ExecContext(ctx, query, args...)
+		}
+
+		if queryErr != nil {
+			report += fmt.Sprintf("❌ Ошибка для '%s' (%s): %v\n", a.TargetName, a.Action, queryErr)
+		} else {
 			aff, _ := res.RowsAffected()
-			report += fmt.Sprintf("- Added item '%s' for %d chars\n", a.ItemName, aff)
+			report += fmt.Sprintf("✅ %s: затронуто %d персонажей\n", a.Action, aff)
 		}
 	}
 	r.send(peerID, report)
 }
 
+// ... Остальные методы (handleAdviceRequest, handleStatusRequest и т.д.) ...
+// (Оставляем как было в предыдущей версии)
 func (r *Router) handleAdviceRequest(ctx context.Context, peerID, fromID int) {
 	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
 	if err != nil {
@@ -882,14 +899,7 @@ func (r *Router) handleAdviceRequest(ctx context.Context, peerID, fromID int) {
 	reply, err := r.llm.GenerateForPlayer(ctx, pctx)
 	if err != nil {
 		log.Printf("llm error: %v", err)
-		_, sendErr := r.vk.MessagesSend(api.Params{
-			"peer_id":   peerID,
-			"random_id": time.Now().UnixNano(),
-			"message":   "Тени шепчут невнятно. Попробуй ещё раз.",
-		})
-		if sendErr != nil {
-			log.Printf("advice llm fail send error: %v", sendErr)
-		}
+		r.send(peerID, "Тени шепчут невнятно. Попробуй ещё раз.")
 		return
 	}
 
@@ -903,15 +913,7 @@ func (r *Router) handleAdviceRequest(ctx context.Context, peerID, fromID int) {
 		log.Printf("scene log error: %v", err)
 	}
 
-	_, err = r.vk.MessagesSend(api.Params{
-		"peer_id":   peerID,
-		"random_id": time.Now().UnixNano(),
-		"message":   reply,
-	})
-	if err != nil {
-		log.Printf("advice send error: %v", err)
-	}
-	log.Printf("OUT MSG peer=%d len=%d", peerID, len(reply))
+	r.send(peerID, reply)
 }
 
 func (r *Router) handleStatusRequest(ctx context.Context, peerID, fromID int) {
@@ -952,6 +954,7 @@ func (r *Router) handleStatusRequest(ctx context.Context, peerID, fromID int) {
 	r.send(peerID, sb.String())
 }
 
+// ... handleQuestProgress (без изменений) ...
 func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, text string) {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 
