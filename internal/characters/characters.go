@@ -265,3 +265,36 @@ WHERE id = ?`,
 
 	return ch, nil
 }
+
+func (s *Service) TickTurn(ctx context.Context, charID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT name FROM character_effects 
+		WHERE character_id = ? AND duration_turns = 1`, charID)
+
+	var expiredNames []string
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err == nil {
+				expiredNames = append(expiredNames, name)
+			}
+		}
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE character_effects
+		SET duration_turns = duration_turns - 1
+		WHERE character_id = ? AND duration_turns > 0
+	`, charID)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		DELETE FROM character_effects
+		WHERE character_id = ? AND duration_turns = 0
+	`, charID)
+
+	return expiredNames, err
+}

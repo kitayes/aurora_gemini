@@ -845,13 +845,13 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 
 	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
 	if err != nil {
-		log.Printf("character error: %v", err)
+		log.Printf("Ошибка персонажа: %v", err)
 		return
 	}
 
 	qs, err := r.questService.GetActiveForCharacter(ctx, ch.ID)
 	if err != nil {
-		log.Printf("quests error: %v", err)
+		log.Printf("Ошибка квеста: %v", err)
 		r.send(peerID, "Не удалось получить активные квесты.")
 		return
 	}
@@ -863,7 +863,7 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 
 	sc, err := r.scenes.GetActiveScene(ctx)
 	if err != nil {
-		log.Printf("scene error: %v", err)
+		log.Printf("Ошибка сцены: %v", err)
 		return
 	}
 
@@ -879,7 +879,7 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 		loc.Name,
 	)
 	if err != nil {
-		log.Printf("set scene location error: %v", err)
+		log.Printf("Ошибка установки локации: %v", err)
 		r.send(peerID, "Не удалось установить текущую локацию.")
 		return
 	}
@@ -893,7 +893,7 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 	}
 
 	qCtx := llm.QuestProgressContext{
-		Character:    *ch, // Dereference
+		Character:    *ch,
 		Scene:        sc,
 		Quest:        q,
 		History:      history,
@@ -920,20 +920,46 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 	if result.RewardGold > 0 {
 		ch.Gold += result.RewardGold
 	}
-	if err := r.charService.UpdateCombatAndGold(ctx, ch); err != nil {
-		log.Printf("char gold update error: %v", err)
-	}
 
-	textOut := result.Narration
-	if result.RewardGold > 0 {
-		textOut += "\n\nТы получаешь " + strconv.Itoa(result.RewardGold) + " золотых."
-	}
 	if len(result.RewardItems) > 0 {
-		textOut += "\nНаграда (предметы):"
-		for _, it := range result.RewardItems {
-			textOut += "\n— " + it
+		addedItems := strings.Join(result.RewardItems, ", ")
+
+		if ch.Inventory == "" || strings.ToLower(ch.Inventory) == "пусто" {
+			ch.Inventory = addedItems
+		} else {
+			ch.Inventory += ", " + addedItems
+		}
+
+		_, err = r.db.ExecContext(ctx,
+			"UPDATE characters SET inventory = ?, gold = ? WHERE id = ?",
+			ch.Inventory, ch.Gold, ch.ID)
+		if err != nil {
+			log.Printf("inventory save error: %v", err)
+		}
+	} else {
+		if err := r.charService.UpdateCombatAndGold(ctx, ch); err != nil {
+			log.Printf("char update error: %v", err)
 		}
 	}
+
+	expired, _ := r.charService.TickTurn(ctx, ch.ID)
+
+	var sb strings.Builder
+	sb.WriteString(result.Narration)
+	sb.WriteString("\n\n(" + ch.GetStatusDescription() + ")")
+
+	if len(expired) > 0 {
+		sb.WriteString("\n\nПрошло действие эффектов: " + strings.Join(expired, ", "))
+	}
+
+	if result.RewardGold > 0 {
+		sb.WriteString("\n\nПолучено золото: " + strconv.Itoa(result.RewardGold))
+	}
+	if len(result.RewardItems) > 0 {
+		sb.WriteString("\nПолучены предметы: " + strings.Join(result.RewardItems, ", "))
+	}
+
+	textOut := sb.String()
 
 	if err := r.scenes.AppendMessage(ctx, models.SceneMessage{
 		SceneID:    sc.ID,
@@ -1002,7 +1028,13 @@ func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text 
 		log.Printf("char combat update error: %v", err)
 	}
 
+	expired, _ := r.charService.TickTurn(ctx, ch.ID)
+
 	textOut := result.RoundDesc + "\n\n(" + ch.GetStatusDescription() + ")"
+
+	if len(expired) > 0 {
+		textOut += "\n\nПрошло действие эффектов: " + strings.Join(expired, ", ")
+	}
 
 	if err := r.scenes.AppendMessage(ctx, models.SceneMessage{
 		SceneID:    sc.ID,
@@ -1030,7 +1062,7 @@ func (r *Router) handleLocationList(ctx context.Context, peerID int) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📍 Локации мира:\n")
+	sb.WriteString("Локации мира:\n")
 	for _, l := range ls {
 		sb.WriteString("— [" + strconv.FormatInt(l.ID, 10) + "] " + l.Name)
 		if l.Tags != "" {
@@ -1060,7 +1092,7 @@ func (r *Router) handleLocationCreate(ctx context.Context, peerID, fromID int, t
 		return
 	}
 
-	r.send(peerID, "📍 Локация создана: "+loc.Name+"\nID: "+strconv.FormatInt(loc.ID, 10))
+	r.send(peerID, "Локация создана: "+loc.Name+"\nID: "+strconv.FormatInt(loc.ID, 10))
 }
 
 func (r *Router) handleLocationSetCurrent(ctx context.Context, peerID int, text string) {
@@ -1141,8 +1173,9 @@ func (r *Router) logSceneMessage(ctx context.Context, fromID int64, text string)
 		bgCtx := context.Background()
 
 		count, _ := r.scenes.GetMessageCount(bgCtx, sceneID)
+
 		if count > 20 {
-			log.Printf("Triggering summarization for scene %d...", sceneID)
+			log.Printf("Triggering summarization for scene %d (msgs: %d)...", sceneID, count)
 
 			history, _ := r.scenes.GetLastMessagesSummary(bgCtx, sceneID, 20)
 
