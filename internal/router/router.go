@@ -273,6 +273,8 @@ func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, te
 		r.handleQuestRequest(ctx, peerID, fromID)
 	case strings.HasPrefix(lower, "!совет"):
 		r.handleAdviceRequest(ctx, peerID, fromID)
+	case strings.HasPrefix(lower, "!профиль"):
+		r.handleProfileRequest(ctx, peerID, fromID)
 	case strings.HasPrefix(lower, "!статус"):
 		r.handleStatusRequest(ctx, peerID, fromID)
 	case strings.HasPrefix(lower, "!ход"):
@@ -861,8 +863,6 @@ func (r *Router) handleNaturalGMCommand(ctx context.Context, peerID, fromID int,
 	r.send(peerID, report)
 }
 
-// ... Остальные методы (handleAdviceRequest, handleStatusRequest и т.д.) ...
-// (Оставляем как было в предыдущей версии)
 func (r *Router) handleAdviceRequest(ctx context.Context, peerID, fromID int) {
 	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
 	if err != nil {
@@ -929,32 +929,75 @@ func (r *Router) handleStatusRequest(ctx context.Context, peerID, fromID int) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("👤 СОСТОЯНИЕ ПЕРСОНАЖА:\n")
-	sb.WriteString(ch.GetStatusDescription() + "\n")
+
+	sb.WriteString(fmt.Sprintf("%s\n", ch.Name))
+	sb.WriteString(fmt.Sprintf("Раса: %s | Класс: %s\n", ch.Race, ch.Class))
+	sb.WriteString(strings.Repeat("—", 20) + "\n")
+
+	sb.WriteString(fmt.Sprintf("❤Здоровье: %d%%\n", ch.CombatHealth))
+	sb.WriteString(fmt.Sprintf("Боевой потенциал: %d\n", ch.CombatPower))
+	sb.WriteString(fmt.Sprintf("Монетки: %d\n", ch.Gold))
+	sb.WriteString("\n")
+
+	inv := ch.Inventory
+	if inv == "" || inv == "Пусто" {
+		inv = "Пусто"
+	}
+	sb.WriteString(fmt.Sprintf("ИНВЕНТАРЬ:\n%s\n\n", inv))
 
 	if len(ch.Effects) > 0 {
-		sb.WriteString("\n⚡ ЭФФЕКТЫ:\n")
+		sb.WriteString("ЭФФЕКТЫ:\n")
 		for _, eff := range ch.Effects {
 			if !eff.IsHidden {
 				sb.WriteString(fmt.Sprintf("• %s (%s)\n", eff.Name, eff.Description))
 			}
 		}
+		sb.WriteString("\n")
 	}
-	sb.WriteString("\n")
 
 	if len(qs) > 0 {
-		sb.WriteString("📜 АКТИВНЫЕ КВЕСТЫ:\n")
+		sb.WriteString("ТЕКУЩАЯ ЗАДАЧА:\n")
 		for _, q := range qs {
-			sb.WriteString("— " + q.Title + " (стадия " + strconv.Itoa(q.Stage) + ")\n")
+			sb.WriteString(fmt.Sprintf("— %s\n(Этап %d, Сложность: %s)\n", q.Title, q.Stage, q.Difficulty))
 		}
 	} else {
-		sb.WriteString("📜 АКТИВНЫЕ КВЕСТЫ: нет\n")
+		sb.WriteString("ЗАДАЧИ: Нет активных квестов\n")
 	}
+
+	sb.WriteString("\n(Для полной биографии пиши: !профиль)")
 
 	r.send(peerID, sb.String())
 }
 
-// ... handleQuestProgress (без изменений) ...
+func (r *Router) handleProfileRequest(ctx context.Context, peerID, fromID int) {
+	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
+	if err != nil {
+		r.send(peerID, "Ошибка получения профиля.")
+		return
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("ДОСЬЕ: %s\n", ch.Name))
+	sb.WriteString(strings.Repeat("—", 20) + "\n")
+
+	sb.WriteString(fmt.Sprintf("Цель: %s\n", ch.Goal))
+	sb.WriteString(fmt.Sprintf("Характер: %s\n\n", ch.Traits))
+
+	abilities := ch.Abilities
+	if abilities == "" {
+		abilities = "Нет явных способностей"
+	}
+	sb.WriteString(fmt.Sprintf("СПОСОБНОСТИ:\n%s\n\n", abilities))
+
+	bio := ch.Bio
+	if len(bio) > 500 {
+		bio = bio[:497] + "..."
+	}
+	sb.WriteString(fmt.Sprintf("БИОГРАФИЯ:\n%s\n", bio))
+
+	r.send(peerID, sb.String())
+}
+
 func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, text string) {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 
