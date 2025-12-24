@@ -238,9 +238,9 @@ func (r *Router) handleLapidariusChat(ctx context.Context, peerID, fromID int, t
 		return
 	}
 
-	sc, err := r.scenes.GetActiveScene(ctx)
+	sc, err := r.scenes.GetOrCreateSceneForCharacter(ctx, ch.ID)
 	if err != nil {
-		sc = models.Scene{Name: "Путешествие", LocationName: "Неизвестно"}
+		sc = models.Scene{Name: "Ошибка мира", LocationName: "Пустота"}
 	}
 
 	history, _ := r.scenes.GetLastMessagesSummary(ctx, sc.ID, 5)
@@ -295,11 +295,11 @@ func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, te
 	case strings.HasPrefix(lower, "!отказываюсь"):
 		r.handleQuestDecision(ctx, peerID, fromID, "decline")
 	case strings.HasPrefix(lower, "!сюжет") || strings.HasPrefix(lower, "!хроника"):
-		r.handleSummaryRequest(ctx, peerID)
+		r.handleSummaryRequest(ctx, peerID, fromID)
 	case strings.HasPrefix(lower, "!локация список"):
 		r.handleLocationList(ctx, peerID)
 	case strings.HasPrefix(lower, "!локация текущая"):
-		r.handleLocationSetCurrent(ctx, peerID, text)
+		r.handleLocationSetCurrent(ctx, peerID, fromID, text)
 	case strings.HasPrefix(lower, "!локация"):
 		r.handleLocationCreate(ctx, peerID, fromID, text)
 	case strings.HasPrefix(lower, "!квест"):
@@ -339,17 +339,26 @@ func (r *Router) handlePlayerCommand(ctx context.Context, peerID, fromID int, te
 	}
 }
 
-func (r *Router) handleSummaryRequest(ctx context.Context, peerID int) {
-	sc, err := r.scenes.GetActiveScene(ctx)
+func (r *Router) handleSummaryRequest(ctx context.Context, peerID, fromID int) {
+	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
+	if err != nil {
+		r.send(peerID, "Сфера не видит твою ауру.")
+		return
+	}
+
+	sc, err := r.scenes.GetOrCreateSceneForCharacter(ctx, ch.ID)
 	if err != nil {
 		r.send(peerID, "История мира туманна (ошибка сцены).")
 		return
 	}
+
 	summary := sc.Summary
 	if summary == "" {
 		summary = "История только начинается..."
 	}
+
 	recentLog, _ := r.scenes.GetLastMessagesSummary(ctx, sc.ID, 15)
+
 	prompt := fmt.Sprintf(`ТЫ — ЛЕТОПИСЕЦ. ТЕКУЩИЙ СЮЖЕТ: %s. НОВЫЕ СОБЫТИЯ: %s. Напиши краткую сводку (3-5 предложений) в прошедшем времени.`, summary, recentLog)
 	newSummary, err := r.llm.GeneratePlain(ctx, prompt)
 	if err != nil {
@@ -357,32 +366,6 @@ func (r *Router) handleSummaryRequest(ctx context.Context, peerID int) {
 		return
 	}
 	r.send(peerID, fmt.Sprintf("📜 ХРОНИКИ АВРОРЫ:\n\n%s", newSummary))
-}
-
-func (r *Router) handleFormExample(ctx context.Context, peerID int) {
-	example := `Пример анкеты персонажа:
-
-!анкета
-Имя: Астрид Вейр
-Раса: человек
-Черты: холодная, расчетливая, предана долгу
-
-Способности:
-- холодная логика
-- допросы и психологическое давление
-- ритуальная магия огня
-
-Биография:
-Родилась в приграничном городе. В детстве пережила нападение культа и теперь охотится на одержимых.`
-
-	_, err := r.vk.MessagesSend(api.Params{
-		"peer_id":   peerID,
-		"random_id": time.Now().UnixNano(),
-		"message":   example,
-	})
-	if err != nil {
-		log.Printf("form example send error: %v", err)
-	}
 }
 
 func (r *Router) startOrAppendCharacterForm(ctx context.Context, peerID, fromID int, text string) {
@@ -657,13 +640,8 @@ func (r *Router) handleCharacterForm(ctx context.Context, peerID, fromID int, te
 		return
 	}
 
-	// Локация необязательна
 	if form.LocationName == "" {
-		if sc, err := r.scenes.GetActiveScene(ctx); err == nil && sc.LocationName != "" {
-			form.LocationName = sc.LocationName
-		} else {
-			form.LocationName = "Столица Авроры"
-		}
+		form.LocationName = "пустыня Эребора"
 	}
 
 	ch, err := r.charService.UpdateFromForm(ctx, int64(fromID), form)
@@ -718,7 +696,7 @@ func (r *Router) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 		}
 	}
 
-	sc, err := r.scenes.GetActiveScene(ctx)
+	sc, err := r.scenes.GetOrCreateSceneForCharacter(ctx, ch.ID)
 	if err != nil {
 		log.Printf("get scene error: %v", err)
 		return
@@ -914,7 +892,7 @@ func (r *Router) handleAdviceRequest(ctx context.Context, peerID, fromID int) {
 		log.Printf("get character error: %v", err)
 		return
 	}
-	sc, err := r.scenes.GetActiveScene(ctx)
+	sc, err := r.scenes.GetOrCreateSceneForCharacter(ctx, ch.ID)
 	if err != nil {
 		log.Printf("get scene error: %v", err)
 		return
@@ -1087,7 +1065,7 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 	}
 	q := qs[0]
 
-	sc, err := r.scenes.GetActiveScene(ctx)
+	sc, err := r.scenes.GetOrCreateSceneForCharacter(ctx, ch.ID)
 	if err != nil {
 		log.Printf("Ошибка сцены: %v", err)
 		return
@@ -1099,8 +1077,9 @@ func (r *Router) handleQuestProgress(ctx context.Context, peerID, fromID int, te
 		return
 	}
 
-	err = r.scenes.SetActiveSceneLocation(
+	err = r.scenes.UpdateSceneLocation(
 		ctx,
+		sc.ID,
 		sql.NullInt64{Int64: loc.ID, Valid: true},
 		loc.Name,
 	)
@@ -1215,7 +1194,7 @@ func (r *Router) handleCombatTurn(ctx context.Context, peerID, fromID int, text 
 		log.Printf("char error: %v", err)
 		return
 	}
-	sc, err := r.scenes.GetActiveScene(ctx)
+	sc, err := r.scenes.GetOrCreateSceneForCharacter(ctx, ch.ID)
 	if err != nil {
 		log.Printf("scene error: %v", err)
 		return
@@ -1321,7 +1300,7 @@ func (r *Router) handleLocationCreate(ctx context.Context, peerID, fromID int, t
 	r.send(peerID, "Локация создана: "+loc.Name+"\nID: "+strconv.FormatInt(loc.ID, 10))
 }
 
-func (r *Router) handleLocationSetCurrent(ctx context.Context, peerID int, text string) {
+func (r *Router) handleLocationSetCurrent(ctx context.Context, peerID, fromID int, text string) {
 	parts := strings.Fields(text)
 	if len(parts) < 3 {
 		r.send(peerID, "Использование:\n!локация текущая <id>")
@@ -1340,8 +1319,21 @@ func (r *Router) handleLocationSetCurrent(ctx context.Context, peerID int, text 
 		return
 	}
 
-	err = r.scenes.SetActiveSceneLocation(
+	ch, err := r.charService.GetOrCreateByVK(ctx, int64(fromID))
+	if err != nil {
+		r.send(peerID, "Персонаж не найден.")
+		return
+	}
+
+	sc, err := r.scenes.GetOrCreateSceneForCharacter(ctx, ch.ID)
+	if err != nil {
+		r.send(peerID, "Ошибка получения сцены.")
+		return
+	}
+
+	err = r.scenes.UpdateSceneLocation(
 		ctx,
+		sc.ID,
 		sql.NullInt64{Int64: loc.ID, Valid: true},
 		loc.Name,
 	)
@@ -1351,7 +1343,7 @@ func (r *Router) handleLocationSetCurrent(ctx context.Context, peerID int, text 
 		return
 	}
 
-	r.send(peerID, "Текущая локация сцены: "+loc.Name)
+	r.send(peerID, "Текущая локация сцены обновлена: "+loc.Name)
 }
 
 func lastN(s string, n int) string {
@@ -1379,7 +1371,12 @@ func buildWelcomeLine(name, gender string) string {
 }
 
 func (r *Router) logSceneMessage(ctx context.Context, fromID int64, text string) error {
-	sc, err := r.scenes.GetActiveScene(ctx)
+	ch, err := r.charService.GetOrCreateByVK(ctx, fromID)
+	if err != nil {
+		return err
+	}
+
+	sc, err := r.scenes.GetOrCreateSceneForCharacter(ctx, ch.ID)
 	if err != nil {
 		return err
 	}
@@ -1419,4 +1416,30 @@ func (r *Router) logSceneMessage(ctx context.Context, fromID int64, text string)
 	}(sc.ID, sc.Summary)
 
 	return nil
+}
+
+func (r *Router) handleFormExample(ctx context.Context, peerID int) {
+	example := `Пример анкеты персонажа:
+
+!анкета
+Имя: Астрид Вейр
+Раса: человек
+Черты: холодная, расчетливая, предана долгу
+
+Способности:
+- холодная логика
+- допросы и психологическое давление
+- ритуальная магия огня
+
+Биография:
+Родилась в приграничном городе. В детстве пережила нападение культа и теперь охотится на одержимых.`
+
+	_, err := r.vk.MessagesSend(api.Params{
+		"peer_id":   peerID,
+		"random_id": time.Now().UnixNano(),
+		"message":   example,
+	})
+	if err != nil {
+		log.Printf("form example send error: %v", err)
+	}
 }
