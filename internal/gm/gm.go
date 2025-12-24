@@ -2,25 +2,37 @@ package gm
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"aurora/internal/characters"
 	"aurora/internal/config"
 	"aurora/internal/llm"
 	"aurora/internal/scenes"
+
 	"github.com/SevereCloud/vksdk/v2/api"
 )
 
 type Service struct {
-	cfg    *config.Config
-	scenes *scenes.Service
-	llm    llm.Client
-	vk     *api.VK
+	cfg          *config.Config
+	sceneService *scenes.Service
+	charService  *characters.Service
+	llm          llm.Client
+	vk           *api.VK
+	db           *sql.DB
 }
 
-func NewService(cfg *config.Config, scenes *scenes.Service, llm llm.Client, vk *api.VK) *Service {
-	return &Service{cfg: cfg, scenes: scenes, llm: llm, vk: vk}
+func NewService(cfg *config.Config, ss *scenes.Service, cs *characters.Service, llm llm.Client, vk *api.VK, db *sql.DB) *Service {
+	return &Service{
+		cfg:          cfg,
+		sceneService: ss,
+		charService:  cs,
+		llm:          llm,
+		vk:           vk,
+		db:           db,
+	}
 }
 
 func (s *Service) IsGM(vkUserID int64) bool {
@@ -43,14 +55,22 @@ func (s *Service) HandleCommand(ctx context.Context, peerID int64, fromID int64,
 			return true, "Использование: !gm mode <human|ai_assist|ai_full>"
 		}
 		mode := fields[2]
-		sc, err := s.scenes.GetActiveScene(ctx)
+
+		// 1. Находим персонажа ГМ-а (или того, кто отправил команду)
+		ch, err := s.charService.GetOrCreateByVK(ctx, fromID)
+		if err != nil {
+			return true, "Ошибка: персонаж ГМ не найден."
+		}
+
+		sc, err := s.sceneService.GetOrCreateSceneForCharacter(ctx, ch.ID)
 		if err != nil {
 			return true, "Ошибка сцены: " + err.Error()
 		}
-		if err := s.scenes.SetGMMode(ctx, sc.ID, mode); err != nil {
+
+		if err := s.sceneService.SetGMMode(ctx, sc.ID, mode); err != nil {
 			return true, "Ошибка режима: " + err.Error()
 		}
-		return true, fmt.Sprintf("Режим ведущего: %s", mode)
+		return true, fmt.Sprintf("Режим ведущего для вашей сцены: %s", mode)
 
 	case "ask":
 		if len(fields) < 3 {

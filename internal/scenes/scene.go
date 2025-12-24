@@ -20,6 +20,11 @@ func (s *Service) EnsureDefaultScene() error {
 	return nil
 }
 
+func (s *Service) SetGMMode(ctx context.Context, sceneID int64, mode string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE scenes SET gm_mode=? WHERE id=?`, mode, sceneID)
+	return err
+}
+
 func (s *Service) GetOrCreateSceneForCharacter(ctx context.Context, charID int64) (models.Scene, error) {
 	query := `
 		SELECT
