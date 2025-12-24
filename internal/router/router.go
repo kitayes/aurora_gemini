@@ -59,7 +59,9 @@ type Router struct {
 func NewRouter(d Deps) *Router {
 	charSvc := characters.NewService(d.DB)
 	questSvc := quests.NewService(d.DB)
-	gmSvc := gm.NewService(d.Config, d.SceneService, d.LLM, d.VK)
+
+	gmSvc := gm.NewService(d.Config, d.SceneService, charSvc, d.LLM, d.VK, d.DB)
+
 	locSvc := locations.NewService(d.DB)
 
 	return &Router{
