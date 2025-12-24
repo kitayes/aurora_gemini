@@ -11,6 +11,7 @@ type Config struct {
 	VKToken   string
 	VKGroupID int
 	// LLMProvider: "gemini" (default) or "openai"
+	RPPeerID    int `envconfig:"RP_PEER_ID" default:"0"`
 	LLMProvider string
 	OpenAIKey   string
 	GeminiKey   string
@@ -46,6 +47,9 @@ func Load() (*Config, error) {
 	}
 	gmIDStr := get("GM_USER_ID")
 
+	rpPeerIDStr := get("RP_PEER_ID")
+	// ------------------------------------
+
 	if vkToken == "" || group == "" {
 		return nil, fmt.Errorf("VK_TOKEN and VK_GROUP_ID are required")
 	}
@@ -72,6 +76,14 @@ func Load() (*Config, error) {
 		}
 	}
 
+	var rpPeerID int
+	if rpPeerIDStr != "" {
+		rpPeerID, err = strconv.Atoi(rpPeerIDStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid RP_PEER_ID: %w", err)
+		}
+	}
+
 	return &Config{
 		VKToken:     vkToken,
 		VKGroupID:   groupID,
@@ -81,5 +93,6 @@ func Load() (*Config, error) {
 		LLMModel:    llmModel,
 		DBPath:      dbPath,
 		GMUserID:    gmID,
+		RPPeerID:    rpPeerID,
 	}, nil
 }

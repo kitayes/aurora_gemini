@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-// IntentType — типы намерений игрока
 type IntentType string
 
 const (

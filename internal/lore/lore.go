@@ -17,12 +17,14 @@ type Chunk struct {
 
 type Repository interface {
 	GetCoreLore() string
+	GetMasterInstruction() string
 	SelectRelevant(locationTag, factionTag string, extraTags []string) []Chunk
 }
 
 type fileRepo struct {
-	core   string
-	chunks []Chunk
+	core              string
+	masterInstruction string
+	chunks            []Chunk
 }
 
 func NewFileLoreRepo(dir string) (Repository, error) {
@@ -47,12 +49,17 @@ func (r *fileRepo) load(dir string) error {
 	}
 	r.core = c.Text
 
+	masterPath := filepath.Join(dir, "master.json")
+	if masterData, err := os.ReadFile(masterPath); err == nil {
+		r.masterInstruction = string(masterData)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || e.Name() == "core.json" {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || e.Name() == "core.json" || e.Name() == "master.json" {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
@@ -104,4 +111,11 @@ func (r *fileRepo) SelectRelevant(locationTag, factionTag string, extraTags []st
 		}
 	}
 	return res
+}
+
+func (r *fileRepo) GetMasterInstruction() string {
+	if r.masterInstruction == "" {
+		return ""
+	}
+	return r.masterInstruction
 }

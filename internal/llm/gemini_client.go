@@ -16,12 +16,9 @@ import (
 )
 
 const (
-	// ModelFast: Анкеты, проверки, быстрые ответы Лапидария
-	ModelFast = "gemini-2.5-flash-lite"
-	// ModelSmart: Бой, квесты, обычные диалоги (баланс)
+	ModelFast  = "gemini-2.5-flash-lite"
 	ModelSmart = "gemini-2.5-flash"
-	// ModelPro: Гейм-мастер, сложный сюжет, важные решения
-	ModelPro = "gemini-3.0-pro-preview"
+	ModelPro   = "gemini-3-pro-preview"
 )
 
 type GeminiClient struct {
@@ -201,13 +198,22 @@ func (c *GeminiClient) GenerateForPlayer(ctx context.Context, pCtx PlayerContext
 }
 
 func (c *GeminiClient) GenerateForGM(ctx context.Context, prompt string) (string, error) {
+	masterInst := c.loreRepo.GetMasterInstruction()
+
+	var systemPrompt string
+	if masterInst != "" {
+		systemPrompt = masterInst
+	} else {
+		systemPrompt = BuildGMSystemPrompt()
+	}
+
 	contextText := strings.Join([]string{
 		"[БАЗОВЫЙ ЛОР МИРА]\n" + c.loreRepo.GetCoreLore(),
 	}, "\n\n")
 
 	full := strings.Join([]string{
 		"ТЫ ВСЕГДА ДЕЙСТВУЕШЬ ПО СЛЕДУЮЩИМ ПРАВИЛАМ. ИХ НЕЛЬЗЯ ИГНОРИРОВАТЬ.",
-		BuildGMSystemPrompt(),
+		systemPrompt,
 		contextText,
 		"[ДЕЙСТВИЯ ИГРОКОВ]\n" + prompt,
 	}, "\n\n")
@@ -228,7 +234,6 @@ func (c *GeminiClient) GenerateForGM(ctx context.Context, prompt string) (string
 	reply = TrimWeirdTail(reply)
 	reply = EnsureEndingChoice(reply)
 
-	// Guardrails (валидацию) лучше тоже делать через Smart или Pro, но с низкой температурой
 	cfg := GuardrailsConfig{
 		MinWordsLore:  320,
 		MinWordsFight: 140,
@@ -239,7 +244,7 @@ func (c *GeminiClient) GenerateForGM(ctx context.Context, prompt string) (string
 
 	if validation.NeedsHardFixByLLM {
 		repairPrompt := BuildRepairPrompt(
-			BuildGMSystemPrompt(),
+			systemPrompt,
 			contextText,
 			prompt,
 			reply,
