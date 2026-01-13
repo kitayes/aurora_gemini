@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"aurora/internal/lore"
+	"aurora/internal/rag"
 )
 
 const (
@@ -22,10 +23,11 @@ const (
 )
 
 type GeminiClient struct {
-	apiKey   string
-	model    string
-	loreRepo lore.Repository
-	client   *http.Client
+	apiKey     string
+	model      string
+	loreRepo   lore.Repository
+	ragService *rag.Service
+	client     *http.Client
 
 	temperature     float64
 	topP            float64
@@ -40,11 +42,16 @@ func NewGeminiClient(apiKey, model string, loreRepo lore.Repository) *GeminiClie
 		apiKey:          apiKey,
 		model:           model,
 		loreRepo:        loreRepo,
+		ragService:      nil,
 		client:          &http.Client{Timeout: 90 * time.Second},
 		temperature:     0.9,
 		topP:            0.95,
 		maxOutputTokens: 8192,
 	}
+}
+
+func (c *GeminiClient) SetRAGService(ragService *rag.Service) {
+	c.ragService = ragService
 }
 
 type geminiRequest struct {
@@ -183,7 +190,24 @@ func (c *GeminiClient) GeneratePlain(ctx context.Context, prompt string) (string
 func (c *GeminiClient) GenerateForPlayer(ctx context.Context, pCtx PlayerContext) (string, error) {
 	systemPrompt := BuildPlayerSystemPrompt()
 	baseLore := c.loreRepo.GetCoreLore()
-	loreBlocks := c.loreRepo.SelectRelevant(pCtx.LocationTag, pCtx.FactionTag, pCtx.CustomTags)
+
+	var loreBlocks []lore.Chunk
+	if c.ragService != nil {
+		query := fmt.Sprintf("Персонаж %s в локации %s. %s", pCtx.Character.Name, pCtx.LocationTag, pCtx.PlayerMessage)
+		var err error
+		loreBlocks, err = c.ragService.RetrieveRelevant(ctx, query, rag.RetrievalOptions{
+			Limit: 5,
+			Filters: map[string]string{
+				"zone": pCtx.LocationTag,
+			},
+		})
+		if err != nil {
+			loreBlocks = c.loreRepo.SelectRelevant(pCtx.LocationTag, pCtx.FactionTag, pCtx.CustomTags)
+		}
+	} else {
+		loreBlocks = c.loreRepo.SelectRelevant(pCtx.LocationTag, pCtx.FactionTag, pCtx.CustomTags)
+	}
+
 	contextText := BuildPlayerContextBlock(pCtx, baseLore, loreBlocks)
 
 	prompt := strings.Join([]string{
@@ -264,7 +288,24 @@ func (c *GeminiClient) GenerateForGM(ctx context.Context, prompt string) (string
 
 func (c *GeminiClient) GenerateQuestProgress(ctx context.Context, qCtx QuestProgressContext) (QuestProgressResult, error) {
 	baseLore := c.loreRepo.GetCoreLore()
-	loreBlocks := c.loreRepo.SelectRelevant(qCtx.Scene.LocationName, qCtx.Character.FactionName, []string{"экономика", "квест"})
+
+	var loreBlocks []lore.Chunk
+	if c.ragService != nil {
+		query := fmt.Sprintf("Квест %s: %s в локации %s", qCtx.Quest.Title, qCtx.PlayerAction, qCtx.Scene.LocationName)
+		var err error
+		loreBlocks, err = c.ragService.RetrieveRelevant(ctx, query, rag.RetrievalOptions{
+			Limit: 5,
+			Filters: map[string]string{
+				"zone": qCtx.Scene.LocationName,
+			},
+		})
+		if err != nil {
+			loreBlocks = c.loreRepo.SelectRelevant(qCtx.Scene.LocationName, qCtx.Character.FactionName, []string{"экономика", "квест"})
+		}
+	} else {
+		loreBlocks = c.loreRepo.SelectRelevant(qCtx.Scene.LocationName, qCtx.Character.FactionName, []string{"экономика", "квест"})
+	}
+
 	prompt := BuildQuestProgressPrompt(qCtx, baseLore, loreBlocks)
 
 	full := strings.Join([]string{
@@ -287,7 +328,24 @@ func (c *GeminiClient) GenerateQuestProgress(ctx context.Context, qCtx QuestProg
 
 func (c *GeminiClient) GenerateCombatTurn(ctx context.Context, cCtx CombatContext) (CombatResult, error) {
 	baseLore := c.loreRepo.GetCoreLore()
-	loreBlocks := c.loreRepo.SelectRelevant(cCtx.Scene.LocationName, cCtx.Character.FactionName, []string{"бой", "магия", "экономика"})
+
+	var loreBlocks []lore.Chunk
+	if c.ragService != nil {
+		query := fmt.Sprintf("Бой в локации %s: %s", cCtx.Scene.LocationName, cCtx.PlayerAction)
+		var err error
+		loreBlocks, err = c.ragService.RetrieveRelevant(ctx, query, rag.RetrievalOptions{
+			Limit: 5,
+			Filters: map[string]string{
+				"zone": cCtx.Scene.LocationName,
+			},
+		})
+		if err != nil {
+			loreBlocks = c.loreRepo.SelectRelevant(cCtx.Scene.LocationName, cCtx.Character.FactionName, []string{"бой", "магия", "экономика"})
+		}
+	} else {
+		loreBlocks = c.loreRepo.SelectRelevant(cCtx.Scene.LocationName, cCtx.Character.FactionName, []string{"бой", "магия", "экономика"})
+	}
+
 	prompt := BuildCombatPrompt(cCtx, baseLore, loreBlocks)
 
 	full := strings.Join([]string{
@@ -310,8 +368,25 @@ func (c *GeminiClient) GenerateCombatTurn(ctx context.Context, cCtx CombatContex
 
 func (c *GeminiClient) AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error) {
 	baseLore := c.loreRepo.GetCoreLore()
-	searchTags := append(pCtx.CustomTags, question)
-	loreBlocks := c.loreRepo.SelectRelevant(pCtx.LocationTag, pCtx.FactionTag, searchTags)
+
+	var loreBlocks []lore.Chunk
+	if c.ragService != nil {
+		var err error
+		loreBlocks, err = c.ragService.RetrieveRelevant(ctx, question, rag.RetrievalOptions{
+			Limit: 7,
+			Filters: map[string]string{
+				"zone": pCtx.LocationTag,
+			},
+		})
+		if err != nil {
+			searchTags := append(pCtx.CustomTags, question)
+			loreBlocks = c.loreRepo.SelectRelevant(pCtx.LocationTag, pCtx.FactionTag, searchTags)
+		}
+	} else {
+		searchTags := append(pCtx.CustomTags, question)
+		loreBlocks = c.loreRepo.SelectRelevant(pCtx.LocationTag, pCtx.FactionTag, searchTags)
+	}
+
 	contextBlock := BuildPlayerContextBlock(pCtx, baseLore, loreBlocks)
 
 	fullPrompt := strings.Join([]string{

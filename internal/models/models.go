@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+const (
+	HealthExcellent = 90
+	HealthGood      = 70
+	HealthWounded   = 50
+	HealthCritical  = 25
+	HealthAlive     = 0
+)
+
 type Character struct {
 	ID           int64
 	VKUserID     int64
@@ -69,7 +77,7 @@ type Scene struct {
 type SceneMessage struct {
 	ID         int64
 	SceneID    int64
-	SenderType string // "player", "ai", "system"
+	SenderType string
 	SenderID   int64
 	Content    string
 	CreatedAt  time.Time
@@ -119,15 +127,15 @@ func (c *Character) GetStatusDescription() string {
 	hp := c.CombatHealth
 
 	switch {
-	case hp >= 90:
+	case hp >= HealthExcellent:
 		return "Ты полон сил и готов к свершениям."
-	case hp >= 70:
+	case hp >= HealthGood:
 		return "Ты немного утомлен, на теле пара царапин."
-	case hp >= 50:
+	case hp >= HealthWounded:
 		return "Ты ранен. Движения даются тяжелее, дыхание сбито."
-	case hp >= 25:
+	case hp >= HealthCritical:
 		return "Ты тяжело ранен! Кровь заливает глаза, каждое движение причиняет боль."
-	case hp > 0:
+	case hp > HealthAlive:
 		return "ТЫ ПРИ СМЕРТИ. Мир плывет перед глазами, жизнь висит на волоске."
 	default:
 		return "Твое тело бездыханно."
