@@ -188,6 +188,19 @@ func (c *GeminiClient) GeneratePlain(ctx context.Context, prompt string) (string
 }
 
 func (c *GeminiClient) GenerateForPlayer(ctx context.Context, pCtx PlayerContext) (string, error) {
+	// Санитизация входных данных игрока
+	sanitized := SanitizePlayerInput(pCtx.PlayerMessage)
+	if sanitized.IsSuspicious {
+		// Логируем подозрительную активность
+		log.Printf("⚠️ Подозрительный ввод от игрока: %v", sanitized.Warnings)
+	}
+	pCtx.PlayerMessage = sanitized.CleanInput
+
+	// Проверка способностей
+	if !ValidateAbilityUse(pCtx.PlayerMessage, pCtx.Character.Abilities) {
+		return "Сфера молчит. Ты пытаешься использовать силу, которой не обладаешь. Проверь свои способности.", nil
+	}
+
 	systemPrompt := BuildPlayerSystemPrompt()
 	baseLore := c.loreRepo.GetCoreLore()
 
@@ -323,7 +336,13 @@ func (c *GeminiClient) GenerateQuestProgress(ctx context.Context, qCtx QuestProg
 	if err != nil {
 		return QuestProgressResult{}, err
 	}
-	return parseQuestProgress(raw), nil
+
+	result := parseQuestProgress(raw)
+
+	// Валидация и ограничение наград
+	ValidateQuestReward(&result)
+
+	return result, nil
 }
 
 func (c *GeminiClient) GenerateCombatTurn(ctx context.Context, cCtx CombatContext) (CombatResult, error) {
@@ -363,7 +382,13 @@ func (c *GeminiClient) GenerateCombatTurn(ctx context.Context, cCtx CombatContex
 	if err != nil {
 		return CombatResult{}, err
 	}
-	return parseCombatResult(raw), nil
+
+	result := parseCombatResult(raw)
+
+	// Валидация результатов боя (ограничение урона)
+	ValidateCombatResult(&result, cCtx.Character.CombatHealth, 100)
+
+	return result, nil
 }
 
 func (c *GeminiClient) AskLapidarius(ctx context.Context, pCtx PlayerContext, question string) (string, error) {
