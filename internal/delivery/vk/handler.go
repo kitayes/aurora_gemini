@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"aurora/internal/application"
 	"aurora/internal/llm"
 	"aurora/internal/models"
+	"aurora/internal/service"
 	"aurora/pkg/config"
 
 	"github.com/SevereCloud/vksdk/v2/api"
@@ -27,11 +27,11 @@ type Handler struct {
 	cfg          *config.Config
 	vk           *api.VK
 	llm          llm.Client
-	charService  *application.CharacterService
-	questService *application.QuestService
-	sceneService *application.SceneService
-	locService   *application.LocationService
-	gmService    *application.GMService
+	charService  *service.CharacterService
+	questService *service.QuestService
+	sceneService *service.SceneService
+	locService   *service.LocationService
+	gmService    *service.GMService
 
 	formMu  sync.Mutex
 	formBuf map[int64]*formBuffer
@@ -41,11 +41,11 @@ func NewHandler(
 	cfg *config.Config,
 	vk *api.VK,
 	llm llm.Client,
-	charService *application.CharacterService,
-	questService *application.QuestService,
-	sceneService *application.SceneService,
-	locService *application.LocationService,
-	gmService *application.GMService,
+	charService *service.CharacterService,
+	questService *service.QuestService,
+	sceneService *service.SceneService,
+	locService *service.LocationService,
+	gmService *service.GMService,
 ) *Handler {
 	return &Handler{
 		cfg:          cfg,
@@ -109,7 +109,6 @@ func (h *Handler) Start(lp *longpoll.LongPoll) {
 			}
 		}
 
-		// 2. --- ПРОВЕРКА ОБРАЩЕНИЯ (СТРОГИЙ ФИЛЬТР) ---
 		isTriggerPhrase := strings.HasPrefix(lower, "!лапидарий") ||
 			strings.Contains(lower, "сфера лапидария")
 
@@ -118,7 +117,6 @@ func (h *Handler) Start(lp *longpoll.LongPoll) {
 		if isTriggerPhrase || isReplyToBot {
 			isGM := h.gmService.IsGM(int64(fromID))
 
-			// Спрашиваем ИИ о намерениях
 			intent, err := h.llm.ClassifyIntent(ctx, text, isGM)
 			if err != nil {
 				intent = llm.IntentResult{Type: llm.IntentChat}
@@ -135,7 +133,6 @@ func (h *Handler) Start(lp *longpoll.LongPoll) {
 			}
 		}
 
-		// 3. --- ЛОГИРОВАНИЕ ИСТОРИИ (БЕСПЛАТНО) ---
 		isMainChat := h.cfg.RPPeerID == 0 || peerID == h.cfg.RPPeerID
 
 		if isMainChat {

@@ -1,4 +1,4 @@
-package gm
+package service
 
 import (
 	"context"
@@ -7,25 +7,23 @@ import (
 	"strconv"
 	"strings"
 
-	"aurora/internal/characters"
-	"aurora/internal/config"
 	"aurora/internal/llm"
-	"aurora/internal/scenes"
+	"aurora/pkg/config"
 
 	"github.com/SevereCloud/vksdk/v2/api"
 )
 
-type Service struct {
+type GMService struct {
 	cfg          *config.Config
-	sceneService *scenes.Service
-	charService  *characters.Service
+	sceneService *SceneService
+	charService  *CharacterService
 	llm          llm.Client
 	vk           *api.VK
 	db           *sql.DB
 }
 
-func NewService(cfg *config.Config, ss *scenes.Service, cs *characters.Service, llm llm.Client, vk *api.VK, db *sql.DB) *Service {
-	return &Service{
+func NewGMService(cfg *config.Config, ss *SceneService, cs *CharacterService, llm llm.Client, vk *api.VK, db *sql.DB) *GMService {
+	return &GMService{
 		cfg:          cfg,
 		sceneService: ss,
 		charService:  cs,
@@ -35,11 +33,11 @@ func NewService(cfg *config.Config, ss *scenes.Service, cs *characters.Service, 
 	}
 }
 
-func (s *Service) IsGM(vkUserID int64) bool {
+func (s *GMService) IsGM(vkUserID int64) bool {
 	return s.cfg.GMUserID != 0 && int(vkUserID) == s.cfg.GMUserID
 }
 
-func (s *Service) HandleCommand(ctx context.Context, peerID int64, fromID int64, text string) (bool, string) {
+func (s *GMService) HandleCommand(ctx context.Context, peerID int64, fromID int64, text string) (bool, string) {
 	if !strings.HasPrefix(text, "!gm") {
 		return false, ""
 	}
