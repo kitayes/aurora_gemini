@@ -54,7 +54,6 @@ func (s *GMService) HandleCommand(ctx context.Context, peerID int64, fromID int6
 		}
 		mode := fields[2]
 
-		// 1. Находим персонажа ГМ-а (или того, кто отправил команду)
 		ch, err := s.charService.GetOrCreateByVK(ctx, fromID)
 		if err != nil {
 			return true, "Ошибка: персонаж ГМ не найден."

@@ -55,7 +55,7 @@ func (s *QuestService) CreateFromAI(ctx context.Context, charID int64, raw strin
 		}
 	}
 	if title == "" {
-		return nil, nil // Не нашли квест в ответе
+		return nil, nil
 	}
 	if qtype != "" {
 		desc += "\n(Тип: " + qtype + ")"

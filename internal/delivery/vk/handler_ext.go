@@ -10,21 +10,6 @@ import (
 	"aurora/internal/models"
 )
 
-// Part 2 of Handler implementation - helper methods
-// Assuming this is appended or in same package.
-// For `write_to_file` I MUST put it in a separate file if I don't want to overwrite,
-// OR ideally I should have put it all in one.
-// I will create `internal/delivery/vk/handler_quest.go` and `internal/delivery/vk/handler_form.go`
-// to make it cleaner and avoid rewriting the big file.
-
-// BUT `write_to_file` overwrittes `handler.go` if I use the same name.
-// So I will split logic by feature.
-
-// Wait, I missed closing the bracket in `handler.go`? No, I stopped at logSceneMessage.
-// The file is incomplete in my head.
-// I will create `handler_quest.go` in package `vk`.
-// It needs to access `Handler` struct fields. Since it's same package, it works.
-
 func (h *Handler) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 	ch, err := h.charService.GetOrCreateByVK(ctx, int64(fromID))
 	if err != nil {
@@ -68,15 +53,12 @@ func (h *Handler) handleQuestRequest(ctx context.Context, peerID, fromID int) {
 }
 
 func (h *Handler) handleQuestDecision(_ context.Context, peerID, _ int, decision string) {
-	// Simplified implementation
 	h.send(peerID, "Решения по квестам: "+decision)
 }
 
 func (h *Handler) handleSummaryRequest(_ context.Context, peerID, _ int) {
 	h.send(peerID, "Саммари пока не подключено.")
 }
-
-// FORM LOGIC
 
 func (h *Handler) startOrAppendCharacterForm(ctx context.Context, peerID, fromID int, text string) {
 	h.formMu.Lock()

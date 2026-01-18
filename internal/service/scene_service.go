@@ -32,12 +32,11 @@ func (s *SceneService) GetOrCreateSceneForCharacter(ctx context.Context, charID 
 	}
 
 	if err == sql.ErrNoRows {
-		// Создаем новую
 		_, createErr := s.repo.Create(ctx, charID, "Личное приключение", "Столица Авроры", "Начало пути.")
 		if createErr != nil {
 			return models.Scene{}, fmt.Errorf("failed to create scene: %w", createErr)
 		}
-		// Try again
+
 		newSc, err := s.repo.GetActiveForCharacter(ctx, charID)
 		if err != nil {
 			return models.Scene{}, err
@@ -68,7 +67,6 @@ func (s *SceneService) GetLastMessagesSummary(ctx context.Context, sceneID int64
 		lines = append(lines, prefix+": "+m.Content)
 	}
 
-	// Reverse and join
 	result := ""
 	for i := len(lines) - 1; i >= 0; i-- {
 		result += lines[i] + "\n"
